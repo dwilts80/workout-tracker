@@ -73,3 +73,4 @@ select{font:inherit;width:100%;background:#0b1222;color:var(--text);border:1px s
 .profile-row{margin-bottom:8px}.profile-row .list-item{margin:0}
 .list-item.current{outline:2px solid var(--pc)}
 .dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--pc);margin-right:8px}
+.prog-btns .btn{min-width:44px}.btn:disabled{opacity:.35}

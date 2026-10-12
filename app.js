@@ -2,7 +2,7 @@
 /* Workout Tracker — plain JS, data in localStorage. */
 const KEY = 'workoutTracker.v1'; // legacy single-profile key (migrated into 'Me')
 const KEY2 = 'workoutTracker.v2';
-const APP_VERSION = 'v6 · profiles';
+const APP_VERSION = 'v7 · custom routines';
 const $ = s => document.querySelector(s);
 const app = $('#app');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -20,20 +20,48 @@ const TYPES = {wr: ['weight', 'reps'], ws: ['weight', 'sec'], r: ['reps'], s: ['
 const fieldsOf = e => Array.isArray(e.fields) && e.fields.length ? e.fields : ['weight', 'reps'];
 const filled = s => !!(s && (s.done || ['weight', 'reps', 'sec', 'min'].some(k => s[k] !== undefined && s[k] !== '' && s[k] != null)));
 const blankSet = fields => Object.fromEntries(fields.map(k => [k, k === 'done' ? false : '']));
-const suggestedDay = () => { const wd = new Date().getDay(); return wd >= 1 && wd <= 5 ? PROGRAM[wd - 1].id : null; };
-function templateFor(name) { for (const d of PROGRAM) for (const e of d.exercises) if (norm(e.name) === norm(name)) return e; return null; }
+const clone = o => JSON.parse(JSON.stringify(o));
+const routine = () => activeProfile().routine;
+const suggestedDay = () => { const wd = new Date().getDay(), r = routine(); return wd >= 1 && wd <= 5 && r[wd - 1] ? r[wd - 1].id : null; };
+const typeOf = fields => (Object.entries(TYPES).find(([, f]) => f.join() === (fields || WR).join()) || ['wr'])[0];
+const TYPE_LABEL = {wr: 'Weight × reps', r: 'Reps only', ws: 'Weight + seconds', s: 'Seconds', m: 'Minutes', d: 'Rounds'};
+// Extra one-arm work seeded into Me's upper-body days (after the main press/row/pull work).
+const ME_EXTRAS = [
+  {name: 'Left Shoulder Press', sets: 3, target: '3 × 8–12', rest: 'light'},
+  {name: 'Shrug', sets: 3, target: '3 × 10–15'},
+  {name: 'Pull (one-arm, left)', sets: 3, target: '3 × 8–12', note: 'Cable/band pull or row variation of choice.'}];
+function seedRoutine(pid) {
+  const r = clone(PROGRAM);
+  if (pid === 'me') for (const [id, after] of [['d2', 'One-Arm Lat Pulldown'], ['d4', 'One-Arm Pulldown']]) {
+    const d = r.find(x => x.id === id), i = d.exercises.findIndex(e => e.name === after);
+    d.exercises.splice(i + 1, 0, ...clone(ME_EXTRAS));
+  }
+  return r;
+}
+function cleanRoutine(r) {
+  if (!Array.isArray(r) || !r.length) return clone(PROGRAM);
+  return r.map((d, i) => ({id: String(d.id || 'd' + (i + 1)), name: String(d.name || 'Day ' + (i + 1)), note: String(d.note || ''),
+    exercises: (Array.isArray(d.exercises) ? d.exercises : []).map(e => {
+      const x = {name: String(e.name || 'Exercise'), sets: Math.max(1, Math.min(20, parseInt(e.sets) || 1)), target: String(e.target || '')};
+      if (e.rest === 'heavy' || e.rest === 'light') x.rest = e.rest;
+      if (Array.isArray(e.fields) && TYPES[typeOf(e.fields)].join() === e.fields.join() && e.fields.join() !== 'weight,reps') x.fields = e.fields.slice();
+      if (e.note) x.note = String(e.note);
+      return x;
+    })}));
+}
+function templateFor(name) { for (const d of [...routine(), ...PROGRAM]) for (const e of d.exercises) if (norm(e.name) === norm(name)) return e; return null; }
 
 let store, db; // initialised after storage helpers below
-let state = {tab: 'home', editing: null, picking: false, weightEditDate: null};
+let state = {tab: 'home', editing: null, picking: false, weightEditDate: null, progDay: null, progEdit: null};
 
 const emptyData = () => ({version: 1, workouts: [], weights: []});
 const cleanData = d => ({version: 1, workouts: Array.isArray(d && d.workouts) ? d.workouts : [], weights: Array.isArray(d && d.weights) ? d.weights : []});
-function defaultStore() { return {version: 2, active: 'me', profiles: [{id: 'me', name: 'Me', data: emptyData()}, {id: 'cooper', name: 'Cooper', data: emptyData()}]}; }
+function defaultStore() { return {version: 2, active: 'me', profiles: [{id: 'me', name: 'Me', data: emptyData(), routine: seedRoutine('me')}, {id: 'cooper', name: 'Cooper', data: emptyData(), routine: seedRoutine('cooper')}]}; }
 function loadStore() {
   try {
     const st = JSON.parse(localStorage.getItem(KEY2));
     if (st && Array.isArray(st.profiles) && st.profiles.length) {
-      st.profiles.forEach(p => { p.data = cleanData(p.data); p.name = String(p.name || 'Profile'); });
+      st.profiles.forEach(p => { p.data = cleanData(p.data); p.name = String(p.name || 'Profile'); p.routine = Array.isArray(p.routine) && p.routine.length ? cleanRoutine(p.routine) : seedRoutine(p.id); });
       if (!st.profiles.some(p => p.id === st.active)) st.active = st.profiles[0].id;
       return st;
     }
@@ -102,13 +130,14 @@ function renderProfileSheet() {
 }
 function finishEditing() {
   if (state.editing) { const w = current(); if (w) { cleanWorkout(w); if (!w.exercises.length && !w.notes.trim()) db.workouts = db.workouts.filter(x => x.id !== w.id); save(); } state.editing = null; }
-  state.picking = false; state.weightEditDate = null;
+  state.picking = false; state.weightEditDate = null; state.progDay = null; state.progEdit = null;
 }
 function render() {
   renderProfileBar();
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === state.tab));
   if (state.tab === 'home') state.editing ? renderEditor() : state.picking ? renderPicker() : renderHome();
   else if (state.tab === 'weight') renderWeight();
+  else if (state.tab === 'program') renderProgram();
   else renderData();
 }
 
@@ -140,10 +169,11 @@ function renderPicker() {
   setHeader('Start workout', `<button class="btn btn-sm" data-act="cancelPick">Cancel</button>`);
   const sug = suggestedDay();
   let h = `<div class="muted small" style="margin:0 2px 10px">Pick a day from your program${sug ? ' — today is suggested' : ''}, or start blank.</div>`;
-  for (const d of PROGRAM) {
+  for (const d of routine()) {
     h += `<button class="list-item day-pick${d.id === sug ? ' suggested' : ''}" data-act="startTpl" data-tpl="${d.id}"><div class="grow"><div class="t">${esc(d.name)}${d.id === sug ? ' <span class="badge">Today</span>' : ''}</div>
       <div class="muted small">${esc(d.exercises.map(e => e.name).join(' · '))}</div></div><span class="chev">›</span></button>`;
   }
+  h += `<button class="btn btn-sm mt" style="width:100%;margin-bottom:8px" data-act="gotoProgram">✎ Edit ${esc(activeProfile().name)}'s routine</button>`;
   h += `<button class="list-item" data-act="startBlank"><div class="grow"><div class="t">＋ Blank workout</div><div class="muted small">Add your own exercises</div></div><span class="chev">›</span></button>`;
   app.innerHTML = h;
 }
@@ -236,6 +266,69 @@ function renderWeight() {
   app.innerHTML = h;
 }
 
+function renderProgram() {
+  const r = routine(), pn = esc(activeProfile().name);
+  const d = state.progDay && r.find(x => x.id === state.progDay);
+  if (!d) {
+    setHeader('Program');
+    let h = `<div class="muted small" style="margin:0 2px 10px">${pn}'s routine. Changes apply to ${pn}'s future workouts only.</div>`;
+    r.forEach((x, i) => { h += `<button class="list-item" data-act="progOpen" data-day="${x.id}"><div class="grow"><div class="t">${esc(x.name)}</div><div class="muted small">${x.exercises.length} exercises · ${esc(x.exercises.map(e => e.name).join(' · '))}</div></div><span class="chev">✎</span></button>`; });
+    app.innerHTML = h; return;
+  }
+  setHeader('Edit day', `<button class="btn btn-primary btn-sm" data-act="progBack">Done</button>`);
+  const pe = state.progEdit;
+  const form = (e, idx) => `<div class="card prog-form" data-idx="${idx}"><h2>${idx === -1 ? 'Add exercise' : 'Edit exercise'}</h2>
+    <label>Name</label><input id="peName" value="${esc(e.name || '')}" placeholder="e.g. One-Arm Cable Fly" list="peList"><datalist id="peList">${[...new Set([...exerciseNames(), ...PROGRAM.flatMap(x => x.exercises.map(y => y.name))])].map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+    <div class="row mt"><div style="width:30%"><label>Sets</label><input id="peSets" inputmode="numeric" value="${esc(e.sets || 3)}"></div><div class="grow"><label>Target (text)</label><input id="peTarget" value="${esc(e.target || '')}" placeholder="e.g. 3 × 8–12"></div></div>
+    <div class="row mt"><div class="grow"><label>Rest</label><select id="peRest"><option value="">Not set</option><option value="heavy"${e.rest === 'heavy' ? ' selected' : ''}>2–3 min (heavy)</option><option value="light"${e.rest === 'light' ? ' selected' : ''}>60–90 s (accessory)</option></select></div>
+      <div class="grow"><label>Log as</label><select id="peType">${Object.entries(TYPE_LABEL).map(([k, l]) => `<option value="${k}"${typeOf(e.fields) === k ? ' selected' : ''}>${l}</option>`).join('')}</select></div></div>
+    <div class="mt"><label>Note (optional)</label><input id="peNote" value="${esc(e.note || '')}" placeholder="Cues, substitutions…"></div>
+    <div class="row mt"><button class="btn btn-primary grow" data-act="progSaveEx">${idx === -1 ? 'Add' : 'Save'}</button><button class="btn" data-act="progCancelEx">Cancel</button></div></div>`;
+  let h = `<div class="card"><label>Day name</label><input id="dayName" value="${esc(d.name)}"><div class="mt"><label>Day note (optional)</label><input id="dayNote" value="${esc(d.note || '')}" placeholder="Focus for the day"></div></div>`;
+  d.exercises.forEach((e, i) => {
+    if (pe === i) { h += form(e, i); return; }
+    h += `<div class="ex-card prog-ex"><div class="ex-head"><div class="grow"><div class="ex-name">${i + 1}. ${esc(e.name)}</div>
+      <div class="target">${esc(e.target || e.sets + ' sets')}${e.rest ? ` · rest ${e.rest === 'heavy' ? '2–3 min' : '60–90 s'}` : ''} · ${TYPE_LABEL[typeOf(e.fields)]}</div>${e.note ? `<div class="ex-note small">${esc(e.note)}</div>` : ''}</div></div>
+      <div class="row mt prog-btns"><button class="btn btn-sm" data-act="progUp" data-i="${i}" ${i === 0 ? 'disabled' : ''} aria-label="Move up">↑</button><button class="btn btn-sm" data-act="progDown" data-i="${i}" ${i === d.exercises.length - 1 ? 'disabled' : ''} aria-label="Move down">↓</button>
+      <button class="btn btn-sm grow" data-act="progEditEx" data-i="${i}">✎ Edit</button><button class="btn btn-sm btn-danger" data-act="progDelEx" data-i="${i}">Delete</button></div></div>`;
+  });
+  h += pe === -1 ? form({sets: 3}, -1) : `<button class="btn btn-primary btn-block" data-act="progAddEx">＋ Add exercise</button>`;
+  h += `<button class="btn btn-danger btn-block mt" data-act="progReset">Reset this day to default</button>`;
+  app.innerHTML = h;
+}
+function routineAction(act, b) {
+  const r = routine(), d = r.find(x => x.id === state.progDay), i = +b.dataset.i;
+  const rr = () => { save(); renderProgram(); };
+  switch (act) {
+    case 'gotoProgram': finishEditing(); state.tab = 'program'; render(); window.scrollTo(0, 0); return true;
+    case 'progOpen': state.progDay = b.dataset.day; state.progEdit = null; renderProgram(); window.scrollTo(0, 0); return true;
+    case 'progBack': state.progDay = null; state.progEdit = null; renderProgram(); window.scrollTo(0, 0); return true;
+    case 'progUp': if (i > 0) { [d.exercises[i - 1], d.exercises[i]] = [d.exercises[i], d.exercises[i - 1]]; rr(); } return true;
+    case 'progDown': if (i < d.exercises.length - 1) { [d.exercises[i + 1], d.exercises[i]] = [d.exercises[i], d.exercises[i + 1]]; rr(); } return true;
+    case 'progEditEx': state.progEdit = i; renderProgram(); $('.prog-form')?.scrollIntoView({block: 'center'}); return true;
+    case 'progAddEx': state.progEdit = -1; renderProgram(); $('.prog-form')?.scrollIntoView({block: 'center'}); $('#peName')?.focus(); return true;
+    case 'progCancelEx': state.progEdit = null; renderProgram(); return true;
+    case 'progDelEx': if (confirm(`Delete ${d.exercises[i].name} from ${d.name}?`)) { d.exercises.splice(i, 1); state.progEdit = null; rr(); } return true;
+    case 'progSaveEx': {
+      const name = $('#peName').value.trim(); if (!name) { toast('Enter a name'); $('#peName').focus(); return true; }
+      const sets = Math.max(1, Math.min(20, parseInt($('#peSets').value) || 1));
+      const x = {name, sets, target: $('#peTarget').value.trim() || `${sets} sets`};
+      const rest = $('#peRest').value; if (rest) x.rest = rest;
+      const t = $('#peType').value; if (t !== 'wr') x.fields = TYPES[t].slice();
+      const note = $('#peNote').value.trim(); if (note) x.note = note;
+      if (state.progEdit === -1) d.exercises.push(x); else d.exercises[state.progEdit] = x;
+      state.progEdit = null; rr(); toast('Saved'); return true;
+    }
+    case 'progReset': {
+      const def = PROGRAM.find(x => x.id === d.id);
+      if (!def) { toast('No default for this day'); return true; }
+      if (confirm(`Reset ${d.name} to the default program? Your changes to this day will be lost.`)) { r[r.indexOf(d)] = clone(def); state.progEdit = null; rr(); toast('Day reset'); }
+      return true;
+    }
+  }
+  return false;
+}
+
 function renderData() {
   setHeader('Backup');
   const sets = db.workouts.reduce((n, w) => n + w.exercises.reduce((m, e) => m + e.sets.length, 0), 0);
@@ -254,7 +347,7 @@ function addExercise() {
   const inp = $('#exName'); const name = inp && inp.value.trim();
   if (!name) { inp && inp.focus(); return; }
   const w = current();
-  const known = [...exerciseNames(), ...PROGRAM.flatMap(d => d.exercises.map(e => e.name))];
+  const known = [...exerciseNames(), ...routine().flatMap(d => d.exercises.map(e => e.name))];
   const canonical = known.find(n => norm(n) === norm(name)) || name;
   const prev = lastTime(canonical, w.id, w.date);
   const tpl = templateFor(canonical);
@@ -276,12 +369,13 @@ function cleanWorkout(w) {
 app.addEventListener('click', ev => {
   const b = ev.target.closest('[data-act]'); if (!b) return;
   const act = b.dataset.act, ei = +b.dataset.ei, si = +b.dataset.si;
+  if (routineAction(act, b)) return;
   const w = current();
   switch (act) {
     case 'new': state.picking = true; render(); window.scrollTo(0, 0); break;
     case 'startBlank': case 'startTpl': {
       const nw = {id: uid(), date: todayISO(), notes: '', exercises: [], created: Date.now()};
-      const d = act === 'startTpl' && PROGRAM.find(x => x.id === b.dataset.tpl);
+      const d = act === 'startTpl' && routine().find(x => x.id === b.dataset.tpl);
       if (d) {
         nw.template = d.id; nw.templateName = d.name; if (d.note) nw.templateNote = d.note;
         nw.exercises = d.exercises.map(t => { const fields = t.fields || WR; const ex = {name: t.name, target: t.target, sets: Array.from({length: t.sets}, () => blankSet(fields))}; if (t.fields) ex.fields = fields; if (t.rest) ex.rest = t.rest; if (t.note) ex.note = t.note; return ex; });
@@ -309,7 +403,7 @@ app.addEventListener('click', ev => {
     case 'delWeight': if (confirm('Delete this weight entry?')) { db.weights = db.weights.filter(e => e.date !== b.dataset.date); if (state.weightEditDate === b.dataset.date) state.weightEditDate = null; save(); renderWeight(); } break;
     case 'export': {
       save();
-      const out = {app: 'workout-tracker', version: 2, exportedAt: new Date().toISOString(), active: store.active, profiles: store.profiles.map(p => ({id: p.id, name: p.name, workouts: p.data.workouts, weights: p.data.weights}))};
+      const out = {app: 'workout-tracker', version: 2, exportedAt: new Date().toISOString(), active: store.active, profiles: store.profiles.map(p => ({id: p.id, name: p.name, workouts: p.data.workouts, weights: p.data.weights, routine: p.routine}))};
       const blob = new Blob([JSON.stringify(out, null, 2)], {type: 'application/json'});
       const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `workouts-backup-${todayISO()}.json`; document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 1000); toast('Backup exported'); break;
@@ -327,6 +421,7 @@ $('#topAction').addEventListener('click', ev => {
 });
 app.addEventListener('input', ev => {
   const t = ev.target, w = current();
+  if ((t.id === 'dayName' || t.id === 'dayNote') && state.progDay) { const d = routine().find(x => x.id === state.progDay); if (d) { if (t.id === 'dayName') { if (t.value.trim()) d.name = t.value.trim().slice(0, 60); } else d.note = t.value.trim(); save(); } return; }
   if (t.dataset.k && w) { w.exercises[+t.dataset.ei].sets[+t.dataset.si][t.dataset.k] = t.value.trim(); save(); }
   else if (t.dataset.f && w) { w[t.dataset.f] = t.value; save(); }
   else if (t.id === 'exName') {
@@ -366,7 +461,7 @@ function validateImport(d) {
   return {version: 1, workouts, weights: [...byDate.values()]};
 }
 function validateFullImport(raw) {
-  const profiles = raw.profiles.map((p, i) => ({id: String(p.id || 'p' + i), name: String(p.name || 'Profile ' + (i + 1)), data: validateImport({workouts: p.workouts || (p.data && p.data.workouts) || [], weights: p.weights || (p.data && p.data.weights) || []})}));
+  const profiles = raw.profiles.map((p, i) => ({id: String(p.id || 'p' + i), name: String(p.name || 'Profile ' + (i + 1)), data: validateImport({workouts: p.workouts || (p.data && p.data.workouts) || [], weights: p.weights || (p.data && p.data.weights) || []}), routine: Array.isArray(p.routine) && p.routine.length ? cleanRoutine(p.routine) : seedRoutine(String(p.id || ''))}));
   if (!profiles.length) throw new Error('Backup has no profiles');
   return {version: 2, active: profiles.some(p => p.id === raw.active) ? raw.active : profiles[0].id, profiles};
 }
@@ -403,7 +498,7 @@ $('#importFile').addEventListener('change', async ev => {
 });
 
 // Exposed for testing/automation only.
-window.WT = {get db() { return db; }, PROGRAM, suggestedDay, validateImport, weightStats, lastTime, bestWeight, reload() { store = loadStore(); db = activeProfile().data; render(); },
+window.WT = {get db() { return db; }, PROGRAM, routine, suggestedDay, validateImport, weightStats, lastTime, bestWeight, reload() { store = loadStore(); db = activeProfile().data; render(); },
   get store() { return store; }, seed(d) { db = cleanData(d); save(); render(); }, switchTo(id) { finishEditing(); store.active = id; db = activeProfile().data; save(); render(); }, validateFullImport};
 
 render();
