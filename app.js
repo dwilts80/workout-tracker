@@ -1,6 +1,7 @@
 'use strict';
 /* Workout Tracker — plain JS, data in localStorage. */
 const KEY = 'workoutTracker.v1';
+const APP_VERSION = 'v5 · 5-day program';
 const $ = s => document.querySelector(s);
 const app = $('#app');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -209,7 +210,8 @@ function renderData() {
   app.innerHTML = `<div class="card"><h2>Your data</h2><div class="muted">Saved on this device only (browser storage).<br>${db.workouts.length} workouts · ${sets} sets · ${db.weights.length} weight entries</div></div>
     <div class="card"><h2>Export</h2><div class="muted small">Download a JSON backup of workouts and weight entries.</div><button class="btn btn-primary btn-block mt" data-act="export">Export JSON</button></div>
     <div class="card"><h2>Import</h2><div class="muted small">Restore from a JSON backup. This replaces the data currently on this device.</div><button class="btn btn-block mt" data-act="import">Import JSON…</button></div>
-    <div class="card"><h2>Reset</h2><button class="btn btn-danger btn-block" data-act="wipe">Delete all data</button></div>`;
+    <div class="card"><h2>Reset</h2><button class="btn btn-danger btn-block" data-act="wipe">Delete all data</button></div>
+    <div class="muted small" id="appVersion" style="text-align:center">App version ${esc(APP_VERSION)}</div>`;
 }
 
 /* ---------- Actions ---------- */
@@ -340,4 +342,17 @@ $('#importFile').addEventListener('change', async ev => {
 window.WT = {get db() { return db; }, PROGRAM, suggestedDay, validateImport, weightStats, lastTime, bestWeight, reload() { db = load(); render(); }};
 
 render();
-if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    // A new version took over: reload once (skip on very first install). Data lives in localStorage, so it is kept.
+    if (!hadController || reloaded) return;
+    reloaded = true; location.reload();
+  });
+  navigator.serviceWorker.register('sw.js', {updateViaCache: 'none'}).then(reg => {
+    const check = () => reg.update().catch(() => {});
+    check();
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') check(); });
+  }).catch(() => {});
+}
