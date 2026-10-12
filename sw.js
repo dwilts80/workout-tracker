@@ -1,6 +1,6 @@
-const VERSION = 'v5';
+const VERSION = 'v6';
 const CACHE = 'workout-tracker-' + VERSION;
-const ASSETS = ['./', './index.html', './styles.css?v=5', './templates.js?v=5', './app.js?v=5', './manifest.json', './icons/icon-192.png', './icons/icon-512.png'];
+const ASSETS = ['./', './index.html', './styles.css?v=6', './templates.js?v=6', './app.js?v=6', './manifest.json', './icons/icon-192.png', './icons/icon-512.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS.map(u => new Request(u, {cache: 'no-store'})))).then(() => self.skipWaiting()));
 });

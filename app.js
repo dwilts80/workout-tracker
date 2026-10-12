@@ -1,7 +1,8 @@
 'use strict';
 /* Workout Tracker — plain JS, data in localStorage. */
-const KEY = 'workoutTracker.v1';
-const APP_VERSION = 'v5 · 5-day program';
+const KEY = 'workoutTracker.v1'; // legacy single-profile key (migrated into 'Me')
+const KEY2 = 'workoutTracker.v2';
+const APP_VERSION = 'v6 · profiles';
 const $ = s => document.querySelector(s);
 const app = $('#app');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -22,17 +23,31 @@ const blankSet = fields => Object.fromEntries(fields.map(k => [k, k === 'done' ?
 const suggestedDay = () => { const wd = new Date().getDay(); return wd >= 1 && wd <= 5 ? PROGRAM[wd - 1].id : null; };
 function templateFor(name) { for (const d of PROGRAM) for (const e of d.exercises) if (norm(e.name) === norm(name)) return e; return null; }
 
-let db = load();
+let store, db; // initialised after storage helpers below
 let state = {tab: 'home', editing: null, picking: false, weightEditDate: null};
 
-function load() {
+const emptyData = () => ({version: 1, workouts: [], weights: []});
+const cleanData = d => ({version: 1, workouts: Array.isArray(d && d.workouts) ? d.workouts : [], weights: Array.isArray(d && d.weights) ? d.weights : []});
+function defaultStore() { return {version: 2, active: 'me', profiles: [{id: 'me', name: 'Me', data: emptyData()}, {id: 'cooper', name: 'Cooper', data: emptyData()}]}; }
+function loadStore() {
   try {
-    const d = JSON.parse(localStorage.getItem(KEY));
-    if (d && Array.isArray(d.workouts)) return {version: 1, workouts: d.workouts, weights: Array.isArray(d.weights) ? d.weights : []};
+    const st = JSON.parse(localStorage.getItem(KEY2));
+    if (st && Array.isArray(st.profiles) && st.profiles.length) {
+      st.profiles.forEach(p => { p.data = cleanData(p.data); p.name = String(p.name || 'Profile'); });
+      if (!st.profiles.some(p => p.id === st.active)) st.active = st.profiles[0].id;
+      return st;
+    }
   } catch (e) {}
-  return {version: 1, workouts: [], weights: []};
+  const st = defaultStore();
+  // Migrate legacy single-profile data into 'Me'.
+  try { const d = JSON.parse(localStorage.getItem(KEY)); if (d && Array.isArray(d.workouts)) st.profiles[0].data = cleanData(d); } catch (e) {}
+  localStorage.setItem(KEY2, JSON.stringify(st));
+  return st;
 }
-function save() { localStorage.setItem(KEY, JSON.stringify(db)); }
+function activeProfile() { return store.profiles.find(p => p.id === store.active) || store.profiles[0]; }
+const profileColor = id => id === 'cooper' ? '#38bdf8' : id === 'me' ? '#22c55e' : '#c084fc';
+function save() { activeProfile().data = db; localStorage.setItem(KEY2, JSON.stringify(store)); }
+store = loadStore(); db = activeProfile().data;
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 1800); }
 
 const sortedWorkouts = () => [...db.workouts].sort((a, b) => b.date.localeCompare(a.date) || (b.created || 0) - (a.created || 0));
@@ -73,7 +88,24 @@ const prevStr = p => p.fields.includes('done') ? `${p.sets.filter(s => s.done).l
 
 /* ---------- Rendering ---------- */
 function setHeader(title, actionHTML = '') { $('#title').textContent = title; $('#topAction').innerHTML = actionHTML; }
+function renderProfileBar() {
+  const p = activeProfile();
+  const bar = $('#profileBar');
+  bar.style.setProperty('--pc', profileColor(p.id));
+  bar.innerHTML = `<span class="pb-label">Logging for</span> <b id="profileName">${esc(p.name)}</b> <span class="pb-switch">Switch ▾</span>`;
+}
+function renderProfileSheet() {
+  const sh = $('#profileSheet');
+  sh.innerHTML = `<div class="sheet"><h2>Who's training?</h2>${store.profiles.map(p => `<div class="row profile-row"><button class="grow list-item${p.id === store.active ? ' current' : ''}" style="--pc:${profileColor(p.id)}" data-act="switchProfile" data-pid="${p.id}"><span><span class="dot"></span>${esc(p.name)}</span><span class="muted small">${p.data.workouts.length} workout${p.data.workouts.length === 1 ? '' : 's'}${p.id === store.active ? ' · ✓ active' : ''}</span></button>
+    <button class="btn btn-sm" data-act="renameProfile" data-pid="${p.id}">Rename</button></div>`).join('')}<button class="btn btn-block mt" data-act="closeSheet">Close</button></div>`;
+  sh.hidden = false;
+}
+function finishEditing() {
+  if (state.editing) { const w = current(); if (w) { cleanWorkout(w); if (!w.exercises.length && !w.notes.trim()) db.workouts = db.workouts.filter(x => x.id !== w.id); save(); } state.editing = null; }
+  state.picking = false; state.weightEditDate = null;
+}
 function render() {
+  renderProfileBar();
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === state.tab));
   if (state.tab === 'home') state.editing ? renderEditor() : state.picking ? renderPicker() : renderHome();
   else if (state.tab === 'weight') renderWeight();
@@ -98,7 +130,7 @@ function renderHome() {
   }
   if (names.length) {
     h += `<div class="card mt"><h2>🏆 Best weight per exercise</h2><div class="bests">`;
-    for (const n of names.sort((a, b) => a.localeCompare(b))) { const b = bestWeight(n); h += `<div>${esc(n)}</div><div>${b ? fmtNum(b.weight) + ' lbs' : '—'}</div>`; }
+    for (const n of names.sort((a, b) => a.localeCompare(b))) { const b = bestWeight(n); if (!b && !db.workouts.some(w => w.exercises.some(e => norm(e.name) === norm(n) && fieldsOf(e).includes('weight')))) continue; h += `<div>${esc(n)}</div><div>${b ? fmtNum(b.weight) + ' lbs' : '—'}</div>`; }
     h += `</div></div>`;
   }
   app.innerHTML = h;
@@ -207,10 +239,12 @@ function renderWeight() {
 function renderData() {
   setHeader('Backup');
   const sets = db.workouts.reduce((n, w) => n + w.exercises.reduce((m, e) => m + e.sets.length, 0), 0);
-  app.innerHTML = `<div class="card"><h2>Your data</h2><div class="muted">Saved on this device only (browser storage).<br>${db.workouts.length} workouts · ${sets} sets · ${db.weights.length} weight entries</div></div>
-    <div class="card"><h2>Export</h2><div class="muted small">Download a JSON backup of workouts and weight entries.</div><button class="btn btn-primary btn-block mt" data-act="export">Export JSON</button></div>
-    <div class="card"><h2>Import</h2><div class="muted small">Restore from a JSON backup. This replaces the data currently on this device.</div><button class="btn btn-block mt" data-act="import">Import JSON…</button></div>
-    <div class="card"><h2>Reset</h2><button class="btn btn-danger btn-block" data-act="wipe">Delete all data</button></div>
+  const pn = esc(activeProfile().name);
+  app.innerHTML = `<div class="card"><h2>${pn}'s data</h2><div class="muted">Saved on this device only (browser storage).<br>${db.workouts.length} workouts · ${sets} sets · ${db.weights.length} weight entries</div>
+    <div class="muted small mt">All profiles: ${store.profiles.map(p => `${esc(p.name)} (${p.data.workouts.length} workouts, ${p.data.weights.length} weights)`).join(' · ')}</div></div>
+    <div class="card"><h2>Export</h2><div class="muted small">Download a JSON backup of every profile's workouts and weight entries.</div><button class="btn btn-primary btn-block mt" data-act="export">Export JSON</button></div>
+    <div class="card"><h2>Import</h2><div class="muted small">Full backups replace all profiles on this device. Older single-profile backups are imported into the current profile (${pn}).</div><button class="btn btn-block mt" data-act="import">Import JSON…</button></div>
+    <div class="card"><h2>Reset</h2><button class="btn btn-danger btn-block" data-act="wipe">Delete ${pn}'s data</button></div>
     <div class="muted small" id="appVersion" style="text-align:center">App version ${esc(APP_VERSION)}</div>`;
 }
 
@@ -274,12 +308,14 @@ app.addEventListener('click', ev => {
     case 'cancelWeight': state.weightEditDate = null; renderWeight(); break;
     case 'delWeight': if (confirm('Delete this weight entry?')) { db.weights = db.weights.filter(e => e.date !== b.dataset.date); if (state.weightEditDate === b.dataset.date) state.weightEditDate = null; save(); renderWeight(); } break;
     case 'export': {
-      const blob = new Blob([JSON.stringify({app: 'workout-tracker', exportedAt: new Date().toISOString(), ...db}, null, 2)], {type: 'application/json'});
+      save();
+      const out = {app: 'workout-tracker', version: 2, exportedAt: new Date().toISOString(), active: store.active, profiles: store.profiles.map(p => ({id: p.id, name: p.name, workouts: p.data.workouts, weights: p.data.weights}))};
+      const blob = new Blob([JSON.stringify(out, null, 2)], {type: 'application/json'});
       const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `workouts-backup-${todayISO()}.json`; document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 1000); toast('Backup exported'); break;
     }
     case 'import': $('#importFile').click(); break;
-    case 'wipe': if (confirm('Delete ALL workouts and weight entries on this device?')) { db = {version: 1, workouts: [], weights: []}; save(); renderData(); toast('All data deleted'); } break;
+    case 'wipe': if (confirm(`Delete ALL of ${activeProfile().name}'s workouts and weight entries?`)) { db = emptyData(); save(); renderData(); toast('Data deleted'); } break;
   }
 });
 $('#topAction').addEventListener('click', ev => {
@@ -304,8 +340,8 @@ app.addEventListener('change', ev => { if (ev.target.dataset.f === 'date') rende
 app.addEventListener('keydown', ev => { if (ev.key === 'Enter' && ev.target.id === 'exName') { ev.preventDefault(); addExercise(); } });
 document.querySelector('.tabs').addEventListener('click', ev => {
   const b = ev.target.closest('.tab'); if (!b) return;
-  if (state.editing) { const w = current(); if (w) { cleanWorkout(w); if (!w.exercises.length && !w.notes.trim()) db.workouts = db.workouts.filter(x => x.id !== w.id); save(); } state.editing = null; }
-  state.tab = b.dataset.tab; state.picking = false; state.weightEditDate = null; render(); window.scrollTo(0, 0);
+  finishEditing();
+  state.tab = b.dataset.tab; render(); window.scrollTo(0, 0);
 });
 
 function validateImport(d) {
@@ -329,17 +365,46 @@ function validateImport(d) {
   for (const e of (Array.isArray(d.weights) ? d.weights : [])) { const lbs = num(e.lbs); if (/^\d{4}-\d{2}-\d{2}$/.test(e.date) && lbs != null) byDate.set(e.date, {date: e.date, lbs}); }
   return {version: 1, workouts, weights: [...byDate.values()]};
 }
+function validateFullImport(raw) {
+  const profiles = raw.profiles.map((p, i) => ({id: String(p.id || 'p' + i), name: String(p.name || 'Profile ' + (i + 1)), data: validateImport({workouts: p.workouts || (p.data && p.data.workouts) || [], weights: p.weights || (p.data && p.data.weights) || []})}));
+  if (!profiles.length) throw new Error('Backup has no profiles');
+  return {version: 2, active: profiles.some(p => p.id === raw.active) ? raw.active : profiles[0].id, profiles};
+}
+$('#profileBar').addEventListener('click', renderProfileSheet);
+$('#profileSheet').addEventListener('click', ev => {
+  const b = ev.target.closest('[data-act]');
+  if (!b) { if (ev.target.id === 'profileSheet') $('#profileSheet').hidden = true; return; }
+  const p = store.profiles.find(x => x.id === b.dataset.pid);
+  if (b.dataset.act === 'closeSheet') $('#profileSheet').hidden = true;
+  else if (b.dataset.act === 'switchProfile' && p) {
+    finishEditing(); store.active = p.id; db = p.data; save();
+    $('#profileSheet').hidden = true; render(); window.scrollTo(0, 0); toast(`Now logging for ${p.name}`);
+  } else if (b.dataset.act === 'renameProfile' && p) {
+    const n = prompt('Profile name', p.name);
+    if (n && n.trim()) { p.name = n.trim().slice(0, 30); save(); renderProfileSheet(); render(); }
+  }
+});
 $('#importFile').addEventListener('change', async ev => {
   const f = ev.target.files[0]; ev.target.value = ''; if (!f) return;
   try {
-    const d = validateImport(JSON.parse(await f.text()));
-    if (!confirm(`Import ${d.workouts.length} workouts and ${d.weights.length} weight entries? This replaces current data.`)) return;
-    db = d; save(); render(); toast('Backup imported');
+    const raw = JSON.parse(await f.text());
+    finishEditing();
+    if (raw && Array.isArray(raw.profiles)) {
+      const ns = validateFullImport(raw);
+      if (!confirm(`Import ${ns.profiles.length} profiles (${ns.profiles.map(p => `${p.name}: ${p.data.workouts.length} workouts`).join(', ')})? This replaces all profiles on this device.`)) return;
+      store = ns; db = activeProfile().data; save();
+    } else {
+      const d = validateImport(raw);
+      if (!confirm(`Import ${d.workouts.length} workouts and ${d.weights.length} weight entries into ${activeProfile().name}? This replaces ${activeProfile().name}'s current data.`)) return;
+      db = d; save();
+    }
+    render(); toast('Backup imported');
   } catch (e) { alert('Import failed: ' + e.message); }
 });
 
 // Exposed for testing/automation only.
-window.WT = {get db() { return db; }, PROGRAM, suggestedDay, validateImport, weightStats, lastTime, bestWeight, reload() { db = load(); render(); }};
+window.WT = {get db() { return db; }, PROGRAM, suggestedDay, validateImport, weightStats, lastTime, bestWeight, reload() { store = loadStore(); db = activeProfile().data; render(); },
+  get store() { return store; }, seed(d) { db = cleanData(d); save(); render(); }, switchTo(id) { finishEditing(); store.active = id; db = activeProfile().data; save(); render(); }, validateFullImport};
 
 render();
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
