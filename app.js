@@ -13,8 +13,16 @@ const fmtNum = n => n == null ? '—' : (Math.round(n * 10) / 10).toString();
 const norm = s => s.trim().toLowerCase();
 const daysBetween = (a, b) => (Date.parse(b) - Date.parse(a)) / 86400000;
 
+const FIELD = {weight: {label: 'Weight (lbs)', ph: 'lbs', mode: 'decimal'}, reps: {label: 'Reps', ph: 'reps', mode: 'numeric'}, sec: {label: 'Seconds', ph: 'sec', mode: 'numeric'}, min: {label: 'Minutes', ph: 'min', mode: 'decimal'}, done: {label: 'Round done'}};
+const TYPES = {wr: ['weight', 'reps'], ws: ['weight', 'sec'], r: ['reps'], s: ['sec'], m: ['min'], d: ['done']};
+const fieldsOf = e => Array.isArray(e.fields) && e.fields.length ? e.fields : ['weight', 'reps'];
+const filled = s => !!(s && (s.done || ['weight', 'reps', 'sec', 'min'].some(k => s[k] !== undefined && s[k] !== '' && s[k] != null)));
+const blankSet = fields => Object.fromEntries(fields.map(k => [k, k === 'done' ? false : '']));
+const suggestedDay = () => { const wd = new Date().getDay(); return wd >= 1 && wd <= 5 ? PROGRAM[wd - 1].id : null; };
+function templateFor(name) { for (const d of PROGRAM) for (const e of d.exercises) if (norm(e.name) === norm(name)) return e; return null; }
+
 let db = load();
-let state = {tab: 'home', editing: null, weightEditDate: null};
+let state = {tab: 'home', editing: null, picking: false, weightEditDate: null};
 
 function load() {
   try {
@@ -39,8 +47,8 @@ function lastTime(name, excludeId, beforeDate) {
   for (const w of sortedWorkouts()) {
     if (w.id === excludeId) continue;
     if (beforeDate && w.date > beforeDate) continue;
-    const e = w.exercises.find(x => norm(x.name) === norm(name) && x.sets.some(s => s.reps || s.weight));
-    if (e) return {date: w.date, sets: e.sets.filter(s => s.reps || s.weight)};
+    const e = w.exercises.find(x => norm(x.name) === norm(name) && x.sets.some(filled));
+    if (e) return {date: w.date, sets: e.sets.filter(filled), fields: fieldsOf(e)};
   }
   return null;
 }
@@ -50,13 +58,23 @@ function bestWeight(name) {
     for (const s of e.sets) { const wt = num(s.weight); if (wt != null && (best == null || wt > best.weight)) best = {weight: wt, reps: s.reps, date: w.date}; }
   return best;
 }
-const setStr = s => `${s.weight !== '' && s.weight != null ? fmtNum(num(s.weight)) : 'BW'}×${s.reps || '?'}`;
+const setStr = (s, fields = ['weight', 'reps']) => {
+  if (fields.includes('done')) return s.done ? '✓' : '–';
+  const parts = [];
+  if (fields.includes('weight') && (fields.includes('reps') || num(s.weight) != null)) parts.push(num(s.weight) != null ? fmtNum(num(s.weight)) : 'BW');
+  if (fields.includes('reps')) parts.push(s.reps || '?');
+  let out = parts.join('×');
+  if (fields.includes('sec')) out += (out ? ' · ' : '') + (s.sec || '?') + 's';
+  if (fields.includes('min')) out += (out ? ' · ' : '') + (s.min || '?') + ' min';
+  return out;
+};
+const prevStr = p => p.fields.includes('done') ? `${p.sets.filter(s => s.done).length} rounds` : p.sets.map(s => setStr(s, p.fields)).join(', ');
 
 /* ---------- Rendering ---------- */
 function setHeader(title, actionHTML = '') { $('#title').textContent = title; $('#topAction').innerHTML = actionHTML; }
 function render() {
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === state.tab));
-  if (state.tab === 'home') state.editing ? renderEditor() : renderHome();
+  if (state.tab === 'home') state.editing ? renderEditor() : state.picking ? renderPicker() : renderHome();
   else if (state.tab === 'weight') renderWeight();
   else renderData();
 }
@@ -72,7 +90,7 @@ function renderHome() {
     for (const w of ws) {
       const sets = w.exercises.reduce((n, e) => n + e.sets.length, 0);
       const exNames = w.exercises.map(e => e.name).filter(Boolean);
-      h += `<button class="list-item" data-act="open" data-id="${w.id}"><div class="grow"><div class="t">${esc(fmtDate(w.date))}</div>
+      h += `<button class="list-item" data-act="open" data-id="${w.id}"><div class="grow"><div class="t">${esc(fmtDate(w.date))}</div>${w.templateName ? `<div class="small" style="color:var(--accent)">${esc(w.templateName)}</div>` : ''}
         <div class="muted small">${exNames.length ? esc(exNames.join(' · ')) : 'No exercises'}</div>
         <div class="muted small">${w.exercises.length} exercise${w.exercises.length === 1 ? '' : 's'} · ${sets} set${sets === 1 ? '' : 's'}${w.notes ? ' · 📝' : ''}</div></div><span class="chev">›</span></button>`;
     }
@@ -85,28 +103,46 @@ function renderHome() {
   app.innerHTML = h;
 }
 
+function renderPicker() {
+  setHeader('Start workout', `<button class="btn btn-sm" data-act="cancelPick">Cancel</button>`);
+  const sug = suggestedDay();
+  let h = `<div class="muted small" style="margin:0 2px 10px">Pick a day from your program${sug ? ' — today is suggested' : ''}, or start blank.</div>`;
+  for (const d of PROGRAM) {
+    h += `<button class="list-item day-pick${d.id === sug ? ' suggested' : ''}" data-act="startTpl" data-tpl="${d.id}"><div class="grow"><div class="t">${esc(d.name)}${d.id === sug ? ' <span class="badge">Today</span>' : ''}</div>
+      <div class="muted small">${esc(d.exercises.map(e => e.name).join(' · '))}</div></div><span class="chev">›</span></button>`;
+  }
+  h += `<button class="list-item" data-act="startBlank"><div class="grow"><div class="t">＋ Blank workout</div><div class="muted small">Add your own exercises</div></div><span class="chev">›</span></button>`;
+  app.innerHTML = h;
+}
+
 function renderEditor() {
   const w = db.workouts.find(x => x.id === state.editing);
   if (!w) { state.editing = null; return renderHome(); }
   setHeader('Workout', `<button class="btn btn-primary btn-sm" data-act="done">Done</button>`);
   let h = `<div class="card"><div class="row"><div class="grow"><label>Date</label><input type="date" data-f="date" value="${esc(w.date)}"></div></div>
     <div class="mt"><label>Notes (optional)</label><textarea data-f="notes" placeholder="How did it feel?">${esc(w.notes || '')}</textarea></div></div>`;
+  if (w.templateName) h += `<div class="card tpl-banner"><div class="t">${esc(w.templateName)}</div>${w.templateNote ? `<div class="mt small">📌 ${esc(w.templateNote)}</div>` : ''}<div class="mt small muted">⏱ ${esc(REST_NOTE)}</div></div>`;
   w.exercises.forEach((e, ei) => {
     const prev = lastTime(e.name, w.id, w.date);
-    const best = bestWeight(e.name);
-    h += `<div class="ex-card"><div class="ex-head"><div class="ex-name">${esc(e.name)}</div><button class="btn-icon" data-act="delEx" data-ei="${ei}" aria-label="Remove exercise">🗑</button></div>
-      <div class="prev">${prev ? `Last time (${esc(fmtShort(prev.date))}): <b>${prev.sets.map(setStr).join(', ')}</b>` : 'First time logging this exercise'}
+    const fields = fieldsOf(e);
+    const best = fields.includes('weight') ? bestWeight(e.name) : null;
+    h += `<div class="ex-card"><div class="ex-head"><div><div class="ex-name">${esc(e.name)}</div>${e.target ? `<div class="target">Target ${esc(e.target)}${e.rest ? ` · rest ${e.rest === 'heavy' ? '2–3 min' : '60–90 s'}` : ''}</div>` : ''}</div><button class="btn-icon" data-act="delEx" data-ei="${ei}" aria-label="Remove exercise">🗑</button></div>
+      ${e.note ? `<div class="ex-note small">${esc(e.note)}</div>` : ''}
+      <div class="prev">${prev ? `Last time (${esc(fmtShort(prev.date))}): <b>${esc(prevStr(prev))}</b>` : 'First time logging this exercise'}
       ${best ? `<br><span class="pr">🏆 Best: <b>${fmtNum(best.weight)} lbs</b></span> <span>(${esc(fmtShort(best.date))})</span>` : ''}</div>
-      <table class="sets"><thead><tr><th></th><th>Weight (lbs)</th><th>Reps</th><th></th></tr></thead><tbody>`;
+      <table class="sets"><thead><tr><th></th>${fields.map(k => `<th>${k === 'done' ? 'Round' : FIELD[k].label}</th>`).join('')}<th></th></tr></thead><tbody>`;
     e.sets.forEach((s, si) => {
-      h += `<tr><td class="n">${si + 1}</td><td><input inputmode="decimal" data-ei="${ei}" data-si="${si}" data-k="weight" value="${esc(s.weight)}" placeholder="${prev && prev.sets[si] ? esc(prev.sets[si].weight) : 'lbs'}"></td>
-        <td><input inputmode="numeric" data-ei="${ei}" data-si="${si}" data-k="reps" value="${esc(s.reps)}" placeholder="${prev && prev.sets[si] ? esc(prev.sets[si].reps) : 'reps'}"></td>
+      const ps = prev && prev.sets[si];
+      h += `<tr><td class="n">${si + 1}</td>${fields.map(k => k === 'done'
+        ? `<td><button class="btn round-btn${s.done ? ' on' : ''}" data-act="toggleDone" data-ei="${ei}" data-si="${si}">${s.done ? '✓ Done' : 'Mark done'}</button></td>`
+        : `<td><input inputmode="${FIELD[k].mode}" data-ei="${ei}" data-si="${si}" data-k="${k}" value="${esc(s[k] ?? '')}" placeholder="${ps && ps[k] !== undefined && ps[k] !== '' ? esc(ps[k]) : FIELD[k].ph}" aria-label="${FIELD[k].label}"></td>`).join('')}
         <td class="x"><button class="btn-icon" data-act="delSet" data-ei="${ei}" data-si="${si}" aria-label="Remove set">✕</button></td></tr>`;
     });
-    h += `</tbody></table><button class="btn btn-sm mt" data-act="addSet" data-ei="${ei}">＋ Add set</button></div>`;
+    h += `</tbody></table><button class="btn btn-sm mt" data-act="addSet" data-ei="${ei}">＋ Add ${fields.includes('done') ? 'round' : 'set'}</button></div>`;
   });
   h += `<div class="card"><label>Add exercise</label><div class="row"><input class="grow" id="exName" list="exList" placeholder="e.g. Bench Press" autocomplete="off" enterkeyhint="done">
-    <button class="btn btn-primary" data-act="addEx">Add</button></div><datalist id="exList">${exerciseNames().map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+    <button class="btn btn-primary" data-act="addEx">Add</button></div>
+    <div class="mt"><label>Log as</label><select id="exType"><option value="">Auto (weight × reps)</option><option value="wr">Weight × reps</option><option value="r">Reps only</option><option value="ws">Weight + seconds</option><option value="s">Seconds</option><option value="m">Minutes</option><option value="d">Rounds</option></select></div><datalist id="exList">${exerciseNames().map(n => `<option value="${esc(n)}">`).join('')}</datalist>
     <div id="exPreview" class="muted small mt" hidden></div></div>
     <button class="btn btn-danger btn-block mt" data-act="delWorkout">Delete workout</button>`;
   app.innerHTML = h;
@@ -182,16 +218,22 @@ function addExercise() {
   const inp = $('#exName'); const name = inp && inp.value.trim();
   if (!name) { inp && inp.focus(); return; }
   const w = current();
-  const canonical = exerciseNames().find(n => norm(n) === norm(name)) || name;
+  const known = [...exerciseNames(), ...PROGRAM.flatMap(d => d.exercises.map(e => e.name))];
+  const canonical = known.find(n => norm(n) === norm(name)) || name;
   const prev = lastTime(canonical, w.id, w.date);
-  // Pre-fill set count from last time (values shown as placeholders), else one empty set.
-  const n = prev ? prev.sets.length : 1;
-  w.exercises.push({name: canonical, sets: Array.from({length: n}, () => ({weight: '', reps: ''}))});
+  const tpl = templateFor(canonical);
+  const type = $('#exType') && $('#exType').value;
+  const fields = type ? TYPES[type] : prev ? prev.fields : tpl && tpl.fields ? tpl.fields : WR;
+  const n = prev ? prev.sets.length : tpl ? tpl.sets : 1;
+  const ex = {name: canonical, sets: Array.from({length: n}, () => blankSet(fields))};
+  if (fields.join() !== 'weight,reps') ex.fields = fields;
+  if (tpl) { ex.target = tpl.target; if (tpl.rest) ex.rest = tpl.rest; if (tpl.note) ex.note = tpl.note; }
+  w.exercises.push(ex);
   save(); renderEditor();
   const cards = document.querySelectorAll('.ex-card'); cards[cards.length - 1]?.scrollIntoView({block: 'center'});
 }
 function cleanWorkout(w) {
-  for (const e of w.exercises) e.sets = e.sets.filter(s => s.weight !== '' || s.reps !== '');
+  for (const e of w.exercises) e.sets = e.sets.filter(filled);
   w.exercises = w.exercises.filter(e => e.sets.length);
 }
 
@@ -200,11 +242,22 @@ app.addEventListener('click', ev => {
   const act = b.dataset.act, ei = +b.dataset.ei, si = +b.dataset.si;
   const w = current();
   switch (act) {
-    case 'new': { const nw = {id: uid(), date: todayISO(), notes: '', exercises: [], created: Date.now()}; db.workouts.push(nw); save(); state.editing = nw.id; render(); window.scrollTo(0, 0); break; }
+    case 'new': state.picking = true; render(); window.scrollTo(0, 0); break;
+    case 'startBlank': case 'startTpl': {
+      const nw = {id: uid(), date: todayISO(), notes: '', exercises: [], created: Date.now()};
+      const d = act === 'startTpl' && PROGRAM.find(x => x.id === b.dataset.tpl);
+      if (d) {
+        nw.template = d.id; nw.templateName = d.name; if (d.note) nw.templateNote = d.note;
+        nw.exercises = d.exercises.map(t => { const fields = t.fields || WR; const ex = {name: t.name, target: t.target, sets: Array.from({length: t.sets}, () => blankSet(fields))}; if (t.fields) ex.fields = fields; if (t.rest) ex.rest = t.rest; if (t.note) ex.note = t.note; return ex; });
+      }
+      db.workouts.push(nw); save(); state.picking = false; state.editing = nw.id; render(); window.scrollTo(0, 0); break;
+    }
+    case 'cancelPick': state.picking = false; render(); break;
+    case 'toggleDone': { const st = w.exercises[ei].sets[si]; st.done = !st.done; save(); renderEditor(); break; }
     case 'open': state.editing = b.dataset.id; render(); window.scrollTo(0, 0); break;
     case 'addEx': addExercise(); break;
     case 'delEx': if (confirm(`Remove ${w.exercises[ei].name}?`)) { w.exercises.splice(ei, 1); save(); renderEditor(); } break;
-    case 'addSet': { const sets = w.exercises[ei].sets; const last = sets[sets.length - 1]; sets.push({weight: last ? last.weight : '', reps: last ? last.reps : ''}); save(); renderEditor(); break; }
+    case 'addSet': { const ex = w.exercises[ei], sets = ex.sets, last = sets[sets.length - 1]; const ns = blankSet(fieldsOf(ex)); if (last) for (const k of Object.keys(ns)) if (k !== 'done') ns[k] = last[k] ?? ''; sets.push(ns); save(); renderEditor(); break; }
     case 'delSet': w.exercises[ei].sets.splice(si, 1); save(); renderEditor(); break;
     case 'delWorkout': if (confirm('Delete this workout?')) { db.workouts = db.workouts.filter(x => x.id !== w.id); save(); state.editing = null; render(); toast('Workout deleted'); } break;
     case 'saveWeight': {
@@ -228,6 +281,7 @@ app.addEventListener('click', ev => {
   }
 });
 $('#topAction').addEventListener('click', ev => {
+  if (ev.target.closest('[data-act="cancelPick"]')) { state.picking = false; render(); return; }
   if (!ev.target.closest('[data-act="done"]')) return;
   const w = current();
   if (w) { cleanWorkout(w); if (!w.exercises.length && !w.notes.trim()) db.workouts = db.workouts.filter(x => x.id !== w.id); else toast('Workout saved'); save(); }
@@ -239,7 +293,7 @@ app.addEventListener('input', ev => {
   else if (t.dataset.f && w) { w[t.dataset.f] = t.value; save(); }
   else if (t.id === 'exName') {
     const pv = $('#exPreview'), name = t.value.trim(), prev = name && lastTime(name, w.id, w.date), best = name && bestWeight(name);
-    pv.hidden = !prev; if (prev) pv.innerHTML = `Last time (${esc(fmtShort(prev.date))}): ${prev.sets.map(setStr).join(', ')}${best ? ` · 🏆 ${fmtNum(best.weight)} lbs` : ''}`;
+    pv.hidden = !prev; if (prev) pv.innerHTML = `Last time (${esc(fmtShort(prev.date))}): ${esc(prevStr(prev))}${best ? ` · 🏆 ${fmtNum(best.weight)} lbs` : ''}`;
   } else if (t.id === 'wDate' && !state.weightEditDate) {
     const ex = db.weights.find(e => e.date === t.value); $('#wLbs').value = ex ? ex.lbs : '';
   }
@@ -249,15 +303,26 @@ app.addEventListener('keydown', ev => { if (ev.key === 'Enter' && ev.target.id =
 document.querySelector('.tabs').addEventListener('click', ev => {
   const b = ev.target.closest('.tab'); if (!b) return;
   if (state.editing) { const w = current(); if (w) { cleanWorkout(w); if (!w.exercises.length && !w.notes.trim()) db.workouts = db.workouts.filter(x => x.id !== w.id); save(); } state.editing = null; }
-  state.tab = b.dataset.tab; state.weightEditDate = null; render(); window.scrollTo(0, 0);
+  state.tab = b.dataset.tab; state.picking = false; state.weightEditDate = null; render(); window.scrollTo(0, 0);
 });
 
 function validateImport(d) {
   if (!d || typeof d !== 'object' || !Array.isArray(d.workouts)) throw new Error('Not a workout backup file');
   const workouts = d.workouts.map(w => ({
     id: String(w.id || uid()), date: /^\d{4}-\d{2}-\d{2}$/.test(w.date) ? w.date : todayISO(), notes: String(w.notes || ''), created: +w.created || Date.now(),
-    exercises: (Array.isArray(w.exercises) ? w.exercises : []).map(e => ({name: String(e.name || 'Exercise'), sets: (Array.isArray(e.sets) ? e.sets : []).map(s => ({weight: s.weight == null ? '' : String(s.weight), reps: s.reps == null ? '' : String(s.reps)}))}))
+    exercises: (Array.isArray(w.exercises) ? w.exercises : []).map(e => {
+      const ex = {name: String(e.name || 'Exercise'), sets: (Array.isArray(e.sets) ? e.sets : []).map(s => {
+        const o = {weight: s.weight == null ? '' : String(s.weight), reps: s.reps == null ? '' : String(s.reps)};
+        for (const k of ['sec', 'min']) if (s[k] != null) o[k] = String(s[k]);
+        if (s.done != null) o.done = !!s.done;
+        return o;
+      })};
+      if (Array.isArray(e.fields)) ex.fields = e.fields.filter(k => k in FIELD);
+      for (const k of ['target', 'rest', 'note']) if (e[k]) ex[k] = String(e[k]);
+      return ex;
+    })
   }));
+  d.workouts.forEach((w, i) => { for (const k of ['template', 'templateName', 'templateNote']) if (w[k]) workouts[i][k] = String(w[k]); });
   const byDate = new Map();
   for (const e of (Array.isArray(d.weights) ? d.weights : [])) { const lbs = num(e.lbs); if (/^\d{4}-\d{2}-\d{2}$/.test(e.date) && lbs != null) byDate.set(e.date, {date: e.date, lbs}); }
   return {version: 1, workouts, weights: [...byDate.values()]};
@@ -272,7 +337,7 @@ $('#importFile').addEventListener('change', async ev => {
 });
 
 // Exposed for testing/automation only.
-window.WT = {get db() { return db; }, validateImport, weightStats, lastTime, bestWeight, reload() { db = load(); render(); }};
+window.WT = {get db() { return db; }, PROGRAM, suggestedDay, validateImport, weightStats, lastTime, bestWeight, reload() { db = load(); render(); }};
 
 render();
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});

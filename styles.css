@@ -52,3 +52,11 @@ label{display:block;font-size:13px;color:var(--muted);margin:0 0 4px}
 .toast.show{opacity:1}
 .mt{margin-top:10px}
 input::placeholder,textarea::placeholder{color:#475569}
+.target{font-size:13px;color:var(--accent);margin-top:2px}
+.ex-note{margin-top:6px;color:#fcd34d}
+.tpl-banner{border:1px solid #14532d;background:#13261c}
+.tpl-banner .t{font-weight:700}
+.badge{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:999px;background:var(--accent);color:#052e16;font-size:12px;font-weight:700;vertical-align:middle}
+.day-pick.suggested{outline:2px solid var(--accent)}
+.round-btn{width:100%;padding:8px}.round-btn.on{background:var(--accent);color:#052e16;font-weight:600}
+select{font:inherit;width:100%;background:#0b1222;color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
