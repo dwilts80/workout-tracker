@@ -2,7 +2,7 @@
 /* Workout Tracker — plain JS, data in localStorage. */
 const KEY = 'workoutTracker.v1'; // legacy single-profile key (migrated into 'Me')
 const KEY2 = 'workoutTracker.v2';
-const APP_VERSION = 'v8 · resume + checkmarks';
+const APP_VERSION = 'v9 · stretch + routine edits';
 const $ = s => document.querySelector(s);
 const app = $('#app');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -30,10 +30,38 @@ const TYPE_LABEL = {wr: 'Weight × reps', r: 'Reps only', ws: 'Weight + seconds'
 // Extra one-arm work seeded into Me's upper-body days (after the main press/row/pull work).
 const ME_EXTRAS = [
   {name: 'Left Shoulder Press', sets: 3, target: '3 × 8–12', rest: 'light'},
-  {name: 'Shrug', sets: 3, target: '3 × 10–15'},
-  {name: 'Pull (one-arm, left)', sets: 3, target: '3 × 8–12', note: 'Cable/band pull or row variation of choice.'}];
+  {name: 'Left Shoulder Shrug', sets: 3, target: '3 × 10–15'},
+  {name: 'Left Shoulder Pull', sets: 3, target: '3 × 8–12', note: 'Cable/band pull or row variation of choice.'},
+  {name: 'Left Shoulder Lat Pull Down', sets: 3, target: '3 × 8–12', rest: 'light'}];
+// Dad-only renames (v9) + old-name aliases so last-time hints/bests carry over.
+const DAD_RENAMES = {'Shrug': 'Left Shoulder Shrug', 'Pull (one-arm, left)': 'Left Shoulder Pull'};
+const DAD_ALIASES = {'left shoulder shrug': ['shrug'], 'left shoulder pull': ['pull (one-arm, left)']};
+function migrateDad(r) {
+  for (const id of ['d2', 'd4']) {
+    const d = r.find(x => x.id === id); if (!d) continue;
+    for (const e of d.exercises) if (DAD_RENAMES[e.name]) e.name = DAD_RENAMES[e.name];
+    const i = d.exercises.findIndex(e => e.name === 'Left Shoulder Pull');
+    if (i >= 0 && !d.exercises.some(e => norm(e.name) === 'left shoulder lat pull down')) d.exercises.splice(i + 1, 0, {name: 'Left Shoulder Lat Pull Down', sets: 3, target: '3 × 8–12', rest: 'light'});
+  }
+  return r;
+}
+/** Same exercise? (case-insensitive; for Dad also old->new aliases) */
+function sameEx(a, b) {
+  const x = norm(a), y = norm(b); if (x === y) return true;
+  if (activeProfile().id !== 'me') return false;
+  return (DAD_ALIASES[x] || []).includes(y) || (DAD_ALIASES[y] || []).includes(x);
+}
+// Cooper-only exercise names (two-arm versions). Applied to old exact names only; sets/targets/order kept.
+const COOPER_RENAMES = {
+  d2: {'One-Arm Dumbbell/Cable Row': 'Dumbbell/Cable Row', 'One-Arm Incline Press': 'Incline Press', 'One-Arm Lat Pulldown': 'Lat Pulldown', 'One-Arm Lateral Raise': 'Lateral Raise'},
+  d4: {'One-Arm Shoulder Press': 'Shoulder Press', 'One-Arm Row': 'Row', 'One-Arm Chest Press': 'Chest Press', 'One-Arm Pulldown': 'Lat Pulldown'}};
+function renameCooper(r) {
+  for (const [id, map] of Object.entries(COOPER_RENAMES)) { const d = r.find(x => x.id === id); if (d) for (const e of d.exercises) if (map[e.name]) e.name = map[e.name]; }
+  return r;
+}
 function seedRoutine(pid) {
   const r = clone(PROGRAM);
+  if (pid === 'cooper') renameCooper(r);
   if (pid === 'me') for (const [id, after] of [['d2', 'One-Arm Lat Pulldown'], ['d4', 'One-Arm Pulldown']]) {
     const d = r.find(x => x.id === id), i = d.exercises.findIndex(e => e.name === after);
     d.exercises.splice(i + 1, 0, ...clone(ME_EXTRAS));
@@ -58,7 +86,7 @@ let state = {tab: 'home', editing: null, picking: false, weightEditDate: null, p
 
 const emptyData = () => ({version: 1, workouts: [], weights: []});
 const cleanData = d => ({version: 1, workouts: Array.isArray(d && d.workouts) ? d.workouts : [], weights: Array.isArray(d && d.weights) ? d.weights : []});
-function defaultStore() { return {version: 2, renamedDad: true, active: 'me', profiles: [{id: 'me', name: 'Dad', data: emptyData(), routine: seedRoutine('me')}, {id: 'cooper', name: 'Cooper', data: emptyData(), routine: seedRoutine('cooper')}]}; }
+function defaultStore() { return {version: 2, stretchAdded: true, renamedDad: true, cooperRenamed: true, dadLeftRenamed: true, active: 'me', profiles: [{id: 'me', name: 'Dad', data: emptyData(), routine: seedRoutine('me')}, {id: 'cooper', name: 'Cooper', data: emptyData(), routine: seedRoutine('cooper')}]}; }
 function loadStore() {
   try {
     const st = JSON.parse(localStorage.getItem(KEY2));
@@ -66,6 +94,11 @@ function loadStore() {
       st.profiles.forEach(p => { p.data = cleanData(p.data); p.name = String(p.name || 'Profile'); p.routine = Array.isArray(p.routine) && p.routine.length ? cleanRoutine(p.routine) : seedRoutine(p.id); });
       if (!st.profiles.some(p => p.id === st.active)) st.active = st.profiles[0].id;
       // One-time rename of the default 'Me' profile to 'Dad' (custom names are left alone).
+      // One-time migration (by profile id): Cooper's Day 2 / Day 4 renames.
+      if (!st.cooperRenamed) { st.profiles.forEach(p => { if (p.id === 'cooper') renameCooper(p.routine); }); st.cooperRenamed = true; localStorage.setItem(KEY2, JSON.stringify(st)); }
+      // One-time: add the Stretch day to existing profiles (by id) if absent.
+      if (!st.stretchAdded) { st.profiles.forEach(p => { if ((p.id === 'me' || p.id === 'cooper') && !p.routine.some(d => d.id === 'stretch')) p.routine.push(clone(PROGRAM.find(d => d.id === 'stretch'))); }); st.stretchAdded = true; localStorage.setItem(KEY2, JSON.stringify(st)); }
+      if (!st.dadLeftRenamed) { st.profiles.forEach(p => { if (p.id === 'me') migrateDad(p.routine); }); st.dadLeftRenamed = true; localStorage.setItem(KEY2, JSON.stringify(st)); }
       if (!st.renamedDad) { st.profiles.forEach(p => { if (p.id === 'me' && p.name === 'Me') p.name = 'Dad'; }); st.renamedDad = true; localStorage.setItem(KEY2, JSON.stringify(st)); }
       return st;
     }
@@ -95,13 +128,16 @@ function lastTime(name, excludeId, beforeDate) {
   for (const w of sortedWorkouts()) {
     if (w.id === excludeId) continue;
     if (beforeDate && w.date > beforeDate) continue;
-    const e = w.exercises.find(x => norm(x.name) === norm(name) && x.sets.some(performed));
+    const e = w.exercises.find(x => sameEx(x.name, name) && x.sets.some(performed));
     if (e) return {date: w.date, sets: e.sets.filter(performed), fields: fieldsOf(e)};
   }
   return null;
 }
 /** n set rows pre-filled set-by-set from last time (copy the last past set if fewer); unchecked. */
-function prefillSets(name, fields, n, excludeId, date) {
+const holdFromTarget = t => { const m = /(\d+)\s*(s|sec)\b/i.exec(t || ''); return m ? m[1] : ''; };
+function prefillSets(name, fields, n, excludeId, date, target) {
+  const hold = fields.join() === 'sec' ? holdFromTarget(target) : '';
+  if (hold) return Array.from({length: n}, () => ({...blankSet(fields), sec: hold}));
   const prev = lastTime(name, excludeId, date);
   return Array.from({length: n}, (_, i) => {
     const o = blankSet(fields);
@@ -112,7 +148,7 @@ function prefillSets(name, fields, n, excludeId, date) {
 }
 function bestWeight(name) {
   let best = null;
-  for (const w of db.workouts) for (const e of w.exercises) if (norm(e.name) === norm(name))
+  for (const w of db.workouts) for (const e of w.exercises) if (sameEx(e.name, name))
     for (const s of e.sets.filter(performed)) { const wt = num(s.weight); if (wt != null && (best == null || wt > best.weight)) best = {weight: wt, reps: s.reps, date: w.date}; }
   return best;
 }
@@ -174,6 +210,57 @@ window.addEventListener('popstate', () => {
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') save(); });
 window.addEventListener('pagehide', () => save());
 
+/* ---------- Timers: rest (persisted end timestamp) + hold countdown ---------- */
+const REST_KEY = 'workoutTracker.rest';
+let holdTimer = null, audioCtx = null, lastAlert = null;
+const restSecs = e => e.rest === 'heavy' ? 150 : e.rest === 'light' ? 75 : 90;
+const mmss = ms => { const t = Math.max(0, Math.ceil(ms / 1000)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; };
+const getRest = () => { try { return JSON.parse(localStorage.getItem(REST_KEY)); } catch (e) { return null; } };
+const setRest = r => { if (r) localStorage.setItem(REST_KEY, JSON.stringify(r)); else localStorage.removeItem(REST_KEY); tick(); };
+function maybeStartRest(w, ex) {
+  const f = fieldsOf(ex);
+  if (w.template === 'stretch' || f.includes('sec') || f.includes('min') || f.includes('done')) return;
+  const secs = restSecs(ex);
+  setRest({end: Date.now() + secs * 1000, total: secs, label: ex.name, alerted: false});
+}
+function alertDone(kind) {
+  lastAlert = {kind, at: Date.now()};
+  try { if (navigator.vibrate) navigator.vibrate([200, 100, 200]); } catch (e) {}
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.frequency.value = 880; g.gain.setValueAtTime(0.25, audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.4);
+    o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime + 0.4);
+  } catch (e) {}
+}
+document.addEventListener('click', () => { try { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); if (audioCtx.state === 'suspended') audioCtx.resume(); } catch (e) {} }, {capture: true});
+function tick() {
+  const bar = $('#restBar'), r = getRest(), now = Date.now();
+  if (!r) { bar.hidden = true; bar.dataset.key = ''; document.body.classList.remove('has-rest'); }
+  else {
+    const left = r.end - now, done = left <= 0;
+    if (done && !r.alerted) { r.alerted = true; localStorage.setItem(REST_KEY, JSON.stringify(r)); alertDone('rest'); }
+    bar.hidden = false; document.body.classList.add('has-rest'); bar.classList.toggle('done', done);
+    const html = done ? `<span class="rb-t">✓ Rest done</span><span class="muted small grow">${esc(r.label || '')}</span><button class="btn btn-sm" data-r="skip">Dismiss</button>`
+      : `<span class="rb-t" id="restLeft">${mmss(left)}</span><span class="muted small grow">Rest · ${esc(r.label || '')}</span><button class="btn btn-sm" data-r="minus">−15s</button><button class="btn btn-sm" data-r="plus">+15s</button><button class="btn btn-sm" data-r="skip">Skip</button>`;
+    const key = (done ? 'done' : 'run') + '|' + r.label + '|' + r.total;
+    const el = $('#restLeft');
+    if (bar.dataset.key !== key || (!done && !el)) { bar.innerHTML = html; bar.dataset.key = key; }
+    else if (el) el.textContent = mmss(left);
+  }
+  if (holdTimer) {
+    const w = db.workouts.find(x => x.id === holdTimer.wid), btn = app.querySelector(`.hold-btn[data-ei="${holdTimer.ei}"][data-si="${holdTimer.si}"]`);
+    const left = holdTimer.end - now;
+    if (!w) holdTimer = null;
+    else if (left <= 0) {
+      const st = w.exercises[holdTimer.ei] && w.exercises[holdTimer.ei].sets[holdTimer.si];
+      holdTimer = null; if (st) { st.ok = true; w.updated = now; save(); }
+      alertDone('hold'); if (state.editing === w.id) renderEditor();
+    } else if (btn) btn.textContent = mmss(left) + ' ■';
+  }
+}
+setInterval(tick, 250);
+
 function render() {
   renderProfileBar();
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === state.tab));
@@ -228,7 +315,7 @@ function renderEditor() {
   setHeader(inProgress(w) ? 'Workout · in progress' : 'Workout', `<div class="row"><button class="btn btn-sm" data-act="exitWorkout">‹ Home</button><button class="btn btn-primary btn-sm" data-act="done">${inProgress(w) ? 'Finish' : 'Done'}</button></div>`);
   let h = `<div class="card"><div class="row"><div class="grow"><label>Date</label><input type="date" data-f="date" value="${esc(w.date)}"></div></div>
     <div class="mt"><label>Notes (optional)</label><textarea data-f="notes" placeholder="How did it feel?">${esc(w.notes || '')}</textarea></div></div>`;
-  if (w.templateName) h += `<div class="card tpl-banner"><div class="t">${esc(w.templateName)}</div>${w.templateNote ? `<div class="mt small">📌 ${esc(w.templateNote)}</div>` : ''}<div class="mt small muted">⏱ ${esc(REST_NOTE)}</div></div>`;
+  if (w.templateName) h += `<div class="card tpl-banner"><div class="t">${esc(w.templateName)}</div>${w.templateNote ? `<div class="mt small">📌 ${esc(w.templateNote)}</div>` : ''}${w.template === 'stretch' ? '' : `<div class="mt small muted">⏱ ${esc(REST_NOTE)}</div>`}</div>`;
   w.exercises.forEach((e, ei) => {
     const prev = lastTime(e.name, w.id, w.date);
     const fields = fieldsOf(e);
@@ -237,13 +324,13 @@ function renderEditor() {
       ${e.note ? `<div class="ex-note small">${esc(e.note)}</div>` : ''}
       <div class="prev">${prev ? `Last time (${esc(fmtShort(prev.date))}): <b>${esc(prevStr(prev))}</b>` : 'First time logging this exercise'}
       ${best ? `<br><span class="pr">🏆 Best: <b>${fmtNum(best.weight)} lbs</b></span> <span>(${esc(fmtShort(best.date))})</span>` : ''}</div>
-      <table class="sets"><thead><tr><th></th>${fields.map(k => `<th>${k === 'done' ? 'Round' : FIELD[k].label}</th>`).join('')}${fields.includes('done') ? '' : '<th>Done</th>'}<th></th></tr></thead><tbody>`;
+      <table class="sets"><thead><tr><th></th>${fields.map(k => `<th>${k === 'done' ? 'Round' : FIELD[k].label}</th>${k === 'sec' ? '<th>Timer</th>' : ''}`).join('')}${fields.includes('done') ? '' : '<th>Done</th>'}<th></th></tr></thead><tbody>`;
     e.sets.forEach((s, si) => {
       const ps = prev && prev.sets[si];
       const isRound = fields.includes('done'), chk = !isRound && s.ok !== false;
       h += `<tr class="${chk || (isRound && s.done) ? 'set-done' : ''}"><td class="n">${si + 1}</td>${fields.map(k => k === 'done'
         ? `<td><button class="btn round-btn${s.done ? ' on' : ''}" data-act="toggleDone" data-ei="${ei}" data-si="${si}">${s.done ? '✓ Done' : 'Mark done'}</button></td>`
-        : `<td><input inputmode="${FIELD[k].mode}" data-ei="${ei}" data-si="${si}" data-k="${k}" value="${esc(s[k] ?? '')}" placeholder="${ps && ps[k] !== undefined && ps[k] !== '' ? esc(ps[k]) : FIELD[k].ph}" aria-label="${FIELD[k].label}"></td>`).join('')}
+        : `<td><input inputmode="${FIELD[k].mode}" data-ei="${ei}" data-si="${si}" data-k="${k}" value="${esc(s[k] ?? '')}" placeholder="${ps && ps[k] !== undefined && ps[k] !== '' ? esc(ps[k]) : FIELD[k].ph}" aria-label="${FIELD[k].label}"></td>${k === 'sec' ? `<td class="t"><button class="hold-btn${holdTimer && holdTimer.wid === w.id && holdTimer.ei === ei && holdTimer.si === si ? ' run' : ''}" data-act="holdTimer" data-ei="${ei}" data-si="${si}" aria-label="Start hold timer">▶</button></td>` : ''}`).join('')}
         ${isRound ? '' : `<td class="c"><button class="chk${chk ? ' on' : ''}" data-act="toggleSet" data-ei="${ei}" data-si="${si}" aria-label="Mark set ${si + 1} complete" aria-pressed="${chk}">✓</button></td>`}
         <td class="x"><button class="btn-icon" data-act="delSet" data-ei="${ei}" data-si="${si}" aria-label="Remove set">✕</button></td></tr>`;
     });
@@ -366,7 +453,7 @@ function routineAction(act, b) {
       state.progEdit = null; rr(); toast('Saved'); return true;
     }
     case 'progReset': {
-      const def = PROGRAM.find(x => x.id === d.id);
+      const def = (activeProfile().id === 'cooper' ? seedRoutine('cooper') : PROGRAM).find(x => x.id === d.id);
       if (!def) { toast('No default for this day'); return true; }
       if (confirm(`Reset ${d.name} to the default program? Your changes to this day will be lost.`)) { r[r.indexOf(d)] = clone(def); state.progEdit = null; rr(); toast('Day reset'); }
       return true;
@@ -400,7 +487,7 @@ function addExercise() {
   const type = $('#exType') && $('#exType').value;
   const fields = type ? TYPES[type] : prev ? prev.fields : tpl && tpl.fields ? tpl.fields : WR;
   const n = prev ? prev.sets.length : tpl ? tpl.sets : 1;
-  const ex = {name: canonical, sets: prefillSets(canonical, fields, n, w.id, w.date)};
+  const ex = {name: canonical, sets: prefillSets(canonical, fields, n, w.id, w.date, tpl && tpl.target)};
   if (fields.join() !== 'weight,reps') ex.fields = fields;
   if (tpl) { ex.target = tpl.target; if (tpl.rest) ex.rest = tpl.rest; if (tpl.note) ex.note = tpl.note; }
   w.exercises.push(ex);
@@ -428,13 +515,18 @@ app.addEventListener('click', ev => {
       const d = act === 'startTpl' && routine().find(x => x.id === b.dataset.tpl);
       if (d) {
         nw.template = d.id; nw.templateName = d.name; if (d.note) nw.templateNote = d.note;
-        nw.exercises = d.exercises.map(t => { const fields = t.fields || WR; const ex = {name: t.name, target: t.target, sets: prefillSets(t.name, fields, t.sets, nw.id, nw.date)}; if (t.fields) ex.fields = fields; if (t.rest) ex.rest = t.rest; if (t.note) ex.note = t.note; return ex; });
+        nw.exercises = d.exercises.map(t => { const fields = t.fields || WR; const ex = {name: t.name, target: t.target, sets: prefillSets(t.name, fields, t.sets, nw.id, nw.date, t.target)}; if (t.fields) ex.fields = fields; if (t.rest) ex.rest = t.rest; if (t.note) ex.note = t.note; return ex; });
       }
       db.workouts.push(nw); save(); state.picking = false; state.editing = nw.id; render(); window.scrollTo(0, 0); break;
     }
     case 'cancelPick': state.picking = false; render(); break;
     case 'finishBottom': finishWorkout(); break;
-    case 'toggleSet': { const st = w.exercises[ei].sets[si]; st.ok = st.ok === false; w.updated = Date.now(); save(); const tr = b.closest('tr'); tr.classList.toggle('set-done', st.ok); b.classList.toggle('on', st.ok); b.setAttribute('aria-pressed', st.ok); break; }
+    case 'toggleSet': { const ex = w.exercises[ei], st = ex.sets[si]; st.ok = st.ok === false; w.updated = Date.now(); save(); if (st.ok) maybeStartRest(w, ex); const tr = b.closest('tr'); tr.classList.toggle('set-done', st.ok); b.classList.toggle('on', st.ok); b.setAttribute('aria-pressed', st.ok); break; }
+    case 'holdTimer': {
+      if (holdTimer && holdTimer.wid === w.id && holdTimer.ei === ei && holdTimer.si === si) { holdTimer = null; renderEditor(); break; }
+      const secs = Math.max(1, parseInt(w.exercises[ei].sets[si].sec) || holdFromTarget(w.exercises[ei].target) || 30);
+      holdTimer = {wid: w.id, ei, si, end: Date.now() + secs * 1000}; renderEditor(); tick(); break;
+    }
     case 'toggleDone': { const st = w.exercises[ei].sets[si]; st.done = !st.done; save(); renderEditor(); break; }
     case 'open': state.editing = b.dataset.id; render(); window.scrollTo(0, 0); break;
     case 'addEx': addExercise(); break;
@@ -533,6 +625,11 @@ function validateFullImport(raw) {
   return {version: 2, active: profiles.some(p => p.id === raw.active) ? raw.active : profiles[0].id, profiles};
 }
 $('#profileBar').addEventListener('click', renderProfileSheet);
+$('#restBar').addEventListener('click', ev => {
+  const b = ev.target.closest('[data-r]'), r = getRest(); if (!b || !r) return;
+  if (b.dataset.r === 'skip') setRest(null);
+  else { r.end += (b.dataset.r === 'plus' ? 15 : -15) * 1000; if (r.end - Date.now() > 0) r.alerted = false; setRest(r); }
+});
 $('#profileSheet').addEventListener('click', ev => {
   const b = ev.target.closest('[data-act]');
   if (!b) { if (ev.target.id === 'profileSheet') $('#profileSheet').hidden = true; return; }
@@ -565,7 +662,7 @@ $('#importFile').addEventListener('change', async ev => {
 });
 
 // Exposed for testing/automation only.
-window.WT = {get db() { return db; }, PROGRAM, routine, suggestedDay, validateImport, weightStats, lastTime, bestWeight, reload() { store = loadStore(); db = activeProfile().data; render(); },
+window.WT = {get db() { return db; }, getRest, get lastAlert() { return lastAlert; }, get holdTimer() { return holdTimer; }, tick, PROGRAM, routine, suggestedDay, validateImport, weightStats, lastTime, bestWeight, reload() { store = loadStore(); db = activeProfile().data; render(); },
   get store() { return store; }, seed(d) { db = cleanData(d); save(); render(); }, switchTo(id) { finishEditing(); store.active = id; db = activeProfile().data; save(); render(); }, validateFullImport};
 
 render();

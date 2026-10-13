@@ -84,3 +84,12 @@ select{font:inherit;width:100%;background:#0b1222;color:var(--text);border:1px s
 .chk.on{background:var(--accent);color:#052e16;border-color:var(--accent)}
 tr.set-done input{background:#13261c;border-color:#166534}
 tr.set-done td.n{color:var(--accent);font-weight:700}
+.rest-bar{position:fixed;left:0;right:0;bottom:calc(62px + env(safe-area-inset-bottom));z-index:6;display:flex;align-items:center;gap:6px;padding:8px 12px;background:#1e293b;border-top:2px solid #f59e0b}
+.rest-bar[hidden]{display:none}
+.rest-bar .rb-t{font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;min-width:62px;color:#fbbf24}
+.rest-bar.done{background:#14532d;border-top-color:var(--accent)}
+.rest-bar.done .rb-t{color:#bbf7d0}
+body.has-rest{padding-bottom:calc(150px + env(safe-area-inset-bottom))}
+.sets td.t{width:76px}
+.hold-btn{width:72px;height:42px;padding:0;border-radius:12px;background:#1e3a5f;color:#bfdbfe;font-weight:700;font-size:15px}
+.hold-btn.run{background:#f59e0b;color:#1c1300}
