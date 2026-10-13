@@ -2,7 +2,7 @@
 /* Workout Tracker — plain JS, data in localStorage. */
 const KEY = 'workoutTracker.v1'; // legacy single-profile key (migrated into 'Me')
 const KEY2 = 'workoutTracker.v2';
-const APP_VERSION = 'v8 · resume workouts';
+const APP_VERSION = 'v8 · resume + checkmarks';
 const $ = s => document.querySelector(s);
 const app = $('#app');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -19,7 +19,9 @@ const FIELD = {weight: {label: 'Weight (lbs)', ph: 'lbs', mode: 'decimal'}, reps
 const TYPES = {wr: ['weight', 'reps'], ws: ['weight', 'sec'], r: ['reps'], s: ['sec'], m: ['min'], d: ['done']};
 const fieldsOf = e => Array.isArray(e.fields) && e.fields.length ? e.fields : ['weight', 'reps'];
 const filled = s => !!(s && (s.done || ['weight', 'reps', 'sec', 'min'].some(k => s[k] !== undefined && s[k] !== '' && s[k] != null)));
-const blankSet = fields => Object.fromEntries(fields.map(k => [k, k === 'done' ? false : '']));
+// A set counts as performed if it has values and is checked (old sets have no 'ok' flag => completed). Rounds use 'done'.
+const performed = s => !!s && (s.done === true || (s.done === undefined && s.ok !== false && filled(s)));
+const blankSet = fields => { const o = Object.fromEntries(fields.map(k => [k, k === 'done' ? false : ''])); if (!fields.includes('done')) o.ok = false; return o; };
 const clone = o => JSON.parse(JSON.stringify(o));
 const routine = () => activeProfile().routine;
 const suggestedDay = () => { const wd = new Date().getDay(), r = routine(); return wd >= 1 && wd <= 5 && r[wd - 1] ? r[wd - 1].id : null; };
@@ -56,13 +58,15 @@ let state = {tab: 'home', editing: null, picking: false, weightEditDate: null, p
 
 const emptyData = () => ({version: 1, workouts: [], weights: []});
 const cleanData = d => ({version: 1, workouts: Array.isArray(d && d.workouts) ? d.workouts : [], weights: Array.isArray(d && d.weights) ? d.weights : []});
-function defaultStore() { return {version: 2, active: 'me', profiles: [{id: 'me', name: 'Me', data: emptyData(), routine: seedRoutine('me')}, {id: 'cooper', name: 'Cooper', data: emptyData(), routine: seedRoutine('cooper')}]}; }
+function defaultStore() { return {version: 2, renamedDad: true, active: 'me', profiles: [{id: 'me', name: 'Dad', data: emptyData(), routine: seedRoutine('me')}, {id: 'cooper', name: 'Cooper', data: emptyData(), routine: seedRoutine('cooper')}]}; }
 function loadStore() {
   try {
     const st = JSON.parse(localStorage.getItem(KEY2));
     if (st && Array.isArray(st.profiles) && st.profiles.length) {
       st.profiles.forEach(p => { p.data = cleanData(p.data); p.name = String(p.name || 'Profile'); p.routine = Array.isArray(p.routine) && p.routine.length ? cleanRoutine(p.routine) : seedRoutine(p.id); });
       if (!st.profiles.some(p => p.id === st.active)) st.active = st.profiles[0].id;
+      // One-time rename of the default 'Me' profile to 'Dad' (custom names are left alone).
+      if (!st.renamedDad) { st.profiles.forEach(p => { if (p.id === 'me' && p.name === 'Me') p.name = 'Dad'; }); st.renamedDad = true; localStorage.setItem(KEY2, JSON.stringify(st)); }
       return st;
     }
   } catch (e) {}
@@ -91,15 +95,25 @@ function lastTime(name, excludeId, beforeDate) {
   for (const w of sortedWorkouts()) {
     if (w.id === excludeId) continue;
     if (beforeDate && w.date > beforeDate) continue;
-    const e = w.exercises.find(x => norm(x.name) === norm(name) && x.sets.some(filled));
-    if (e) return {date: w.date, sets: e.sets.filter(filled), fields: fieldsOf(e)};
+    const e = w.exercises.find(x => norm(x.name) === norm(name) && x.sets.some(performed));
+    if (e) return {date: w.date, sets: e.sets.filter(performed), fields: fieldsOf(e)};
   }
   return null;
+}
+/** n set rows pre-filled set-by-set from last time (copy the last past set if fewer); unchecked. */
+function prefillSets(name, fields, n, excludeId, date) {
+  const prev = lastTime(name, excludeId, date);
+  return Array.from({length: n}, (_, i) => {
+    const o = blankSet(fields);
+    const ps = prev && prev.fields.join() === fields.join() && prev.sets.length ? prev.sets[Math.min(i, prev.sets.length - 1)] : null;
+    if (ps && !fields.includes('done')) for (const k of fields) o[k] = ps[k] ?? '';
+    return o;
+  });
 }
 function bestWeight(name) {
   let best = null;
   for (const w of db.workouts) for (const e of w.exercises) if (norm(e.name) === norm(name))
-    for (const s of e.sets) { const wt = num(s.weight); if (wt != null && (best == null || wt > best.weight)) best = {weight: wt, reps: s.reps, date: w.date}; }
+    for (const s of e.sets.filter(performed)) { const wt = num(s.weight); if (wt != null && (best == null || wt > best.weight)) best = {weight: wt, reps: s.reps, date: w.date}; }
   return best;
 }
 const setStr = (s, fields = ['weight', 'reps']) => {
@@ -135,7 +149,7 @@ function finishEditing() {
 const inProgress = w => w.status === 'in_progress';
 const drafts = () => sortedWorkouts().filter(inProgress).sort((a, b) => (b.updated || b.created || 0) - (a.updated || a.created || 0));
 const startedStr = w => w.created ? new Date(w.created).toLocaleString(undefined, {weekday: 'short', hour: 'numeric', minute: '2-digit'}) : fmtShort(w.date);
-const filledSets = w => w.exercises.reduce((n, e) => n + e.sets.filter(filled).length, 0);
+const filledSets = w => w.exercises.reduce((n, e) => n + e.sets.filter(performed).length, 0);
 function resumeCards() {
   return drafts().map(w => `<button class="list-item resume-card" data-act="open" data-id="${w.id}"><div class="grow"><div class="t">▶ Resume workout</div>
     <div class="small">${esc(w.templateName || 'Blank workout')} · started ${esc(startedStr(w))}</div><div class="muted small">${filledSets(w)} set${filledSets(w) === 1 ? '' : 's'} logged so far</div></div><span class="chev">›</span></button>`).join('');
@@ -223,12 +237,14 @@ function renderEditor() {
       ${e.note ? `<div class="ex-note small">${esc(e.note)}</div>` : ''}
       <div class="prev">${prev ? `Last time (${esc(fmtShort(prev.date))}): <b>${esc(prevStr(prev))}</b>` : 'First time logging this exercise'}
       ${best ? `<br><span class="pr">🏆 Best: <b>${fmtNum(best.weight)} lbs</b></span> <span>(${esc(fmtShort(best.date))})</span>` : ''}</div>
-      <table class="sets"><thead><tr><th></th>${fields.map(k => `<th>${k === 'done' ? 'Round' : FIELD[k].label}</th>`).join('')}<th></th></tr></thead><tbody>`;
+      <table class="sets"><thead><tr><th></th>${fields.map(k => `<th>${k === 'done' ? 'Round' : FIELD[k].label}</th>`).join('')}${fields.includes('done') ? '' : '<th>Done</th>'}<th></th></tr></thead><tbody>`;
     e.sets.forEach((s, si) => {
       const ps = prev && prev.sets[si];
-      h += `<tr><td class="n">${si + 1}</td>${fields.map(k => k === 'done'
+      const isRound = fields.includes('done'), chk = !isRound && s.ok !== false;
+      h += `<tr class="${chk || (isRound && s.done) ? 'set-done' : ''}"><td class="n">${si + 1}</td>${fields.map(k => k === 'done'
         ? `<td><button class="btn round-btn${s.done ? ' on' : ''}" data-act="toggleDone" data-ei="${ei}" data-si="${si}">${s.done ? '✓ Done' : 'Mark done'}</button></td>`
         : `<td><input inputmode="${FIELD[k].mode}" data-ei="${ei}" data-si="${si}" data-k="${k}" value="${esc(s[k] ?? '')}" placeholder="${ps && ps[k] !== undefined && ps[k] !== '' ? esc(ps[k]) : FIELD[k].ph}" aria-label="${FIELD[k].label}"></td>`).join('')}
+        ${isRound ? '' : `<td class="c"><button class="chk${chk ? ' on' : ''}" data-act="toggleSet" data-ei="${ei}" data-si="${si}" aria-label="Mark set ${si + 1} complete" aria-pressed="${chk}">✓</button></td>`}
         <td class="x"><button class="btn-icon" data-act="delSet" data-ei="${ei}" data-si="${si}" aria-label="Remove set">✕</button></td></tr>`;
     });
     h += `</tbody></table><button class="btn btn-sm mt" data-act="addSet" data-ei="${ei}">＋ Add ${fields.includes('done') ? 'round' : 'set'}</button></div>`;
@@ -384,7 +400,7 @@ function addExercise() {
   const type = $('#exType') && $('#exType').value;
   const fields = type ? TYPES[type] : prev ? prev.fields : tpl && tpl.fields ? tpl.fields : WR;
   const n = prev ? prev.sets.length : tpl ? tpl.sets : 1;
-  const ex = {name: canonical, sets: Array.from({length: n}, () => blankSet(fields))};
+  const ex = {name: canonical, sets: prefillSets(canonical, fields, n, w.id, w.date)};
   if (fields.join() !== 'weight,reps') ex.fields = fields;
   if (tpl) { ex.target = tpl.target; if (tpl.rest) ex.rest = tpl.rest; if (tpl.note) ex.note = tpl.note; }
   w.exercises.push(ex);
@@ -392,7 +408,13 @@ function addExercise() {
   const cards = document.querySelectorAll('.ex-card'); cards[cards.length - 1]?.scrollIntoView({block: 'center'});
 }
 // On finish: drop blank set rows but keep the exercise list.
-function cleanWorkout(w) { for (const e of w.exercises) e.sets = e.sets.filter(filled); }
+function cleanWorkout(w, keepUnchecked) {
+  for (const e of w.exercises) {
+    if (keepUnchecked) for (const st of e.sets) if (st.ok === false && filled(st)) st.ok = true;
+    e.sets = e.sets.filter(performed);
+  }
+}
+const hasUncheckedWithValues = w => w.exercises.some(e => e.sets.some(st => st.ok === false && filled(st)));
 
 app.addEventListener('click', ev => {
   const b = ev.target.closest('[data-act]'); if (!b) return;
@@ -406,17 +428,18 @@ app.addEventListener('click', ev => {
       const d = act === 'startTpl' && routine().find(x => x.id === b.dataset.tpl);
       if (d) {
         nw.template = d.id; nw.templateName = d.name; if (d.note) nw.templateNote = d.note;
-        nw.exercises = d.exercises.map(t => { const fields = t.fields || WR; const ex = {name: t.name, target: t.target, sets: Array.from({length: t.sets}, () => blankSet(fields))}; if (t.fields) ex.fields = fields; if (t.rest) ex.rest = t.rest; if (t.note) ex.note = t.note; return ex; });
+        nw.exercises = d.exercises.map(t => { const fields = t.fields || WR; const ex = {name: t.name, target: t.target, sets: prefillSets(t.name, fields, t.sets, nw.id, nw.date)}; if (t.fields) ex.fields = fields; if (t.rest) ex.rest = t.rest; if (t.note) ex.note = t.note; return ex; });
       }
       db.workouts.push(nw); save(); state.picking = false; state.editing = nw.id; render(); window.scrollTo(0, 0); break;
     }
     case 'cancelPick': state.picking = false; render(); break;
     case 'finishBottom': finishWorkout(); break;
+    case 'toggleSet': { const st = w.exercises[ei].sets[si]; st.ok = st.ok === false; w.updated = Date.now(); save(); const tr = b.closest('tr'); tr.classList.toggle('set-done', st.ok); b.classList.toggle('on', st.ok); b.setAttribute('aria-pressed', st.ok); break; }
     case 'toggleDone': { const st = w.exercises[ei].sets[si]; st.done = !st.done; save(); renderEditor(); break; }
     case 'open': state.editing = b.dataset.id; render(); window.scrollTo(0, 0); break;
     case 'addEx': addExercise(); break;
     case 'delEx': if (confirm(`Remove ${w.exercises[ei].name}?`)) { w.exercises.splice(ei, 1); save(); renderEditor(); } break;
-    case 'addSet': { const ex = w.exercises[ei], sets = ex.sets, last = sets[sets.length - 1]; const ns = blankSet(fieldsOf(ex)); if (last) for (const k of Object.keys(ns)) if (k !== 'done') ns[k] = last[k] ?? ''; sets.push(ns); save(); renderEditor(); break; }
+    case 'addSet': { const ex = w.exercises[ei], sets = ex.sets, last = sets[sets.length - 1]; const ns = blankSet(fieldsOf(ex)); if (last) for (const k of Object.keys(ns)) if (k !== 'done' && k !== 'ok') ns[k] = last[k] ?? ''; sets.push(ns); save(); renderEditor(); break; }
     case 'delSet': w.exercises[ei].sets.splice(si, 1); save(); renderEditor(); break;
     case 'delWorkout': if (confirm('Delete this workout?')) { db.workouts = db.workouts.filter(x => x.id !== w.id); save(); state.editing = null; render(); toast('Workout deleted'); } break;
     case 'saveWeight': {
@@ -448,14 +471,24 @@ $('#topAction').addEventListener('click', ev => {
 });
 function finishWorkout() {
   const w = current();
-  if (w) { const was = inProgress(w); cleanWorkout(w); if (was) { delete w.status; w.finished = Date.now(); } save(); toast(was ? 'Workout finished 💪' : 'Workout saved'); }
+  if (w) { const was = inProgress(w); cleanWorkout(w, hasUncheckedWithValues(w) && confirm('Some sets have values but aren’t checked. Save unchecked sets too?\n\nOK = save them · Cancel = drop them')); if (was) { delete w.status; w.finished = Date.now(); } save(); toast(was ? 'Workout finished 💪' : 'Workout saved'); }
   state.editing = null; render(); window.scrollTo(0, 0);
 }
 app.addEventListener('input', ev => {
   const t = ev.target, w = current();
   if ((t.id === 'dayName' || t.id === 'dayNote') && state.progDay) { const d = routine().find(x => x.id === state.progDay); if (d) { if (t.id === 'dayName') { if (t.value.trim()) d.name = t.value.trim().slice(0, 60); } else d.note = t.value.trim(); save(); } return; }
   if (w && (t.dataset.k || t.dataset.f)) w.updated = Date.now();
-  if (t.dataset.k && w) { w.exercises[+t.dataset.ei].sets[+t.dataset.si][t.dataset.k] = t.value.trim(); save(); }
+  if (t.dataset.k && w) {
+    const ei = +t.dataset.ei, si = +t.dataset.si, k = t.dataset.k, sets = w.exercises[ei].sets, old = sets[si][k] ?? '', v = t.value.trim();
+    sets[si][k] = v;
+    // Copy into following unchecked sets that are empty or still hold the old (copied/prefilled) value.
+    for (let j = si + 1; j < sets.length; j++) {
+      const sj = sets[j];
+      if (sj.ok !== false || !((sj[k] ?? '') === '' || (sj[k] ?? '') === old)) continue;
+      sj[k] = v; const inp = app.querySelector(`input[data-ei="${ei}"][data-si="${j}"][data-k="${k}"]`); if (inp) inp.value = v;
+    }
+    save();
+  }
   else if (t.dataset.f && w) { w[t.dataset.f] = t.value; save(); }
   else if (t.id === 'exName') {
     const pv = $('#exPreview'), name = t.value.trim(), prev = name && lastTime(name, w.id, w.date), best = name && bestWeight(name);
@@ -481,6 +514,7 @@ function validateImport(d) {
         const o = {weight: s.weight == null ? '' : String(s.weight), reps: s.reps == null ? '' : String(s.reps)};
         for (const k of ['sec', 'min']) if (s[k] != null) o[k] = String(s[k]);
         if (s.done != null) o.done = !!s.done;
+        if (s.ok === false) o.ok = false; else if (s.ok === true) o.ok = true;
         return o;
       })};
       if (Array.isArray(e.fields)) ex.fields = e.fields.filter(k => k in FIELD);
