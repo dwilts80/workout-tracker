@@ -2,7 +2,7 @@
 /* Workout Tracker — plain JS, data in localStorage. */
 const KEY = 'workoutTracker.v1'; // legacy single-profile key (migrated into 'Me')
 const KEY2 = 'workoutTracker.v2';
-const APP_VERSION = 'v7 · custom routines';
+const APP_VERSION = 'v8 · resume workouts';
 const $ = s => document.querySelector(s);
 const app = $('#app');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -126,12 +126,40 @@ function renderProfileSheet() {
   const sh = $('#profileSheet');
   sh.innerHTML = `<div class="sheet"><h2>Who's training?</h2>${store.profiles.map(p => `<div class="row profile-row"><button class="grow list-item${p.id === store.active ? ' current' : ''}" style="--pc:${profileColor(p.id)}" data-act="switchProfile" data-pid="${p.id}"><span><span class="dot"></span>${esc(p.name)}</span><span class="muted small">${p.data.workouts.length} workout${p.data.workouts.length === 1 ? '' : 's'}${p.id === store.active ? ' · ✓ active' : ''}</span></button>
     <button class="btn btn-sm" data-act="renameProfile" data-pid="${p.id}">Rename</button></div>`).join('')}<button class="btn btn-block mt" data-act="closeSheet">Close</button></div>`;
-  sh.hidden = false;
+  sh.hidden = false; syncHistory();
 }
 function finishEditing() {
-  if (state.editing) { const w = current(); if (w) { cleanWorkout(w); if (!w.exercises.length && !w.notes.trim()) db.workouts = db.workouts.filter(x => x.id !== w.id); save(); } state.editing = null; }
+  if (state.editing) { save(); state.editing = null; } // drafts are kept as-is (never auto-discarded)
   state.picking = false; state.weightEditDate = null; state.progDay = null; state.progEdit = null;
 }
+const inProgress = w => w.status === 'in_progress';
+const drafts = () => sortedWorkouts().filter(inProgress).sort((a, b) => (b.updated || b.created || 0) - (a.updated || a.created || 0));
+const startedStr = w => w.created ? new Date(w.created).toLocaleString(undefined, {weekday: 'short', hour: 'numeric', minute: '2-digit'}) : fmtShort(w.date);
+const filledSets = w => w.exercises.reduce((n, e) => n + e.sets.filter(filled).length, 0);
+function resumeCards() {
+  return drafts().map(w => `<button class="list-item resume-card" data-act="open" data-id="${w.id}"><div class="grow"><div class="t">▶ Resume workout</div>
+    <div class="small">${esc(w.templateName || 'Blank workout')} · started ${esc(startedStr(w))}</div><div class="muted small">${filledSets(w)} set${filledSets(w) === 1 ? '' : 's'} logged so far</div></div><span class="chev">›</span></button>`).join('');
+}
+/* Android back / browser back: keep one history entry while in a sub-view, so back returns home instead of leaving the app. */
+let ignorePop = false;
+const isSub = () => !!(state.editing || state.picking || state.progDay || !$('#profileSheet').hidden);
+function syncHistory() {
+  const sub = !!(history.state && history.state.wtSub);
+  if (isSub() && !sub) history.pushState({wtSub: 1}, '');
+  else if (!isSub() && sub) { ignorePop = true; history.back(); }
+}
+window.addEventListener('popstate', () => {
+  if (ignorePop) { ignorePop = false; return; }
+  if (!$('#profileSheet').hidden) $('#profileSheet').hidden = true;
+  else if (state.editing) { save(); state.editing = null; toast('Workout saved — resume anytime'); }
+  else if (state.picking) state.picking = false;
+  else if (state.progEdit != null) state.progEdit = null;
+  else if (state.progDay) state.progDay = null;
+  render(); window.scrollTo(0, 0);
+});
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') save(); });
+window.addEventListener('pagehide', () => save());
+
 function render() {
   renderProfileBar();
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === state.tab));
@@ -139,27 +167,28 @@ function render() {
   else if (state.tab === 'weight') renderWeight();
   else if (state.tab === 'program') renderProgram();
   else renderData();
+  syncHistory();
 }
 
 function renderHome() {
   setHeader('Workouts');
   const ws = sortedWorkouts();
   const names = exerciseNames();
-  let h = `<button class="btn btn-primary btn-block" data-act="new">＋ Start workout</button><div class="mt"></div>`;
+  let h = resumeCards() + `<button class="btn ${drafts().length ? '' : 'btn-primary '}btn-block" data-act="new">＋ Start ${drafts().length ? 'new ' : ''}workout</button><div class="mt"></div>`;
   if (!ws.length) h += `<div class="empty">No workouts yet.<br>Tap <b>Start workout</b> to log your first one.</div>`;
   else {
     h += `<h2 style="font-size:15px;color:var(--muted);margin:8px 2px">History</h2>`;
     for (const w of ws) {
-      const sets = w.exercises.reduce((n, e) => n + e.sets.length, 0);
+      const sets = filledSets(w);
       const exNames = w.exercises.map(e => e.name).filter(Boolean);
-      h += `<button class="list-item" data-act="open" data-id="${w.id}"><div class="grow"><div class="t">${esc(fmtDate(w.date))}</div>${w.templateName ? `<div class="small" style="color:var(--accent)">${esc(w.templateName)}</div>` : ''}
+      h += `<button class="list-item" data-act="open" data-id="${w.id}"><div class="grow"><div class="t">${esc(fmtDate(w.date))}${inProgress(w) ? ' <span class="badge badge-ip">In progress</span>' : ''}</div>${w.templateName ? `<div class="small" style="color:var(--accent)">${esc(w.templateName)}</div>` : ''}
         <div class="muted small">${exNames.length ? esc(exNames.join(' · ')) : 'No exercises'}</div>
         <div class="muted small">${w.exercises.length} exercise${w.exercises.length === 1 ? '' : 's'} · ${sets} set${sets === 1 ? '' : 's'}${w.notes ? ' · 📝' : ''}</div></div><span class="chev">›</span></button>`;
     }
   }
-  if (names.length) {
+  if (names.some(n => bestWeight(n))) {
     h += `<div class="card mt"><h2>🏆 Best weight per exercise</h2><div class="bests">`;
-    for (const n of names.sort((a, b) => a.localeCompare(b))) { const b = bestWeight(n); if (!b && !db.workouts.some(w => w.exercises.some(e => norm(e.name) === norm(n) && fieldsOf(e).includes('weight')))) continue; h += `<div>${esc(n)}</div><div>${b ? fmtNum(b.weight) + ' lbs' : '—'}</div>`; }
+    for (const n of names.sort((a, b) => a.localeCompare(b))) { const b = bestWeight(n); if (!b) continue; h += `<div>${esc(n)}</div><div>${b ? fmtNum(b.weight) + ' lbs' : '—'}</div>`; }
     h += `</div></div>`;
   }
   app.innerHTML = h;
@@ -168,7 +197,8 @@ function renderHome() {
 function renderPicker() {
   setHeader('Start workout', `<button class="btn btn-sm" data-act="cancelPick">Cancel</button>`);
   const sug = suggestedDay();
-  let h = `<div class="muted small" style="margin:0 2px 10px">Pick a day from your program${sug ? ' — today is suggested' : ''}, or start blank.</div>`;
+  let h = drafts().length ? `<div class="card ip-note"><div class="t">You have a workout in progress</div><div class="muted small">Resume it, or pick a day below to start a new one (the unfinished one stays saved).</div></div>${resumeCards()}` : '';
+  h += `<div class="muted small" style="margin:0 2px 10px">Pick a day from your program${sug ? ' — today is suggested' : ''}, or start blank.</div>`;
   for (const d of routine()) {
     h += `<button class="list-item day-pick${d.id === sug ? ' suggested' : ''}" data-act="startTpl" data-tpl="${d.id}"><div class="grow"><div class="t">${esc(d.name)}${d.id === sug ? ' <span class="badge">Today</span>' : ''}</div>
       <div class="muted small">${esc(d.exercises.map(e => e.name).join(' · '))}</div></div><span class="chev">›</span></button>`;
@@ -181,7 +211,7 @@ function renderPicker() {
 function renderEditor() {
   const w = db.workouts.find(x => x.id === state.editing);
   if (!w) { state.editing = null; return renderHome(); }
-  setHeader('Workout', `<button class="btn btn-primary btn-sm" data-act="done">Done</button>`);
+  setHeader(inProgress(w) ? 'Workout · in progress' : 'Workout', `<div class="row"><button class="btn btn-sm" data-act="exitWorkout">‹ Home</button><button class="btn btn-primary btn-sm" data-act="done">${inProgress(w) ? 'Finish' : 'Done'}</button></div>`);
   let h = `<div class="card"><div class="row"><div class="grow"><label>Date</label><input type="date" data-f="date" value="${esc(w.date)}"></div></div>
     <div class="mt"><label>Notes (optional)</label><textarea data-f="notes" placeholder="How did it feel?">${esc(w.notes || '')}</textarea></div></div>`;
   if (w.templateName) h += `<div class="card tpl-banner"><div class="t">${esc(w.templateName)}</div>${w.templateNote ? `<div class="mt small">📌 ${esc(w.templateNote)}</div>` : ''}<div class="mt small muted">⏱ ${esc(REST_NOTE)}</div></div>`;
@@ -207,7 +237,7 @@ function renderEditor() {
     <button class="btn btn-primary" data-act="addEx">Add</button></div>
     <div class="mt"><label>Log as</label><select id="exType"><option value="">Auto (weight × reps)</option><option value="wr">Weight × reps</option><option value="r">Reps only</option><option value="ws">Weight + seconds</option><option value="s">Seconds</option><option value="m">Minutes</option><option value="d">Rounds</option></select></div><datalist id="exList">${exerciseNames().map(n => `<option value="${esc(n)}">`).join('')}</datalist>
     <div id="exPreview" class="muted small mt" hidden></div></div>
-    <button class="btn btn-danger btn-block mt" data-act="delWorkout">Delete workout</button>`;
+    ${inProgress(w) ? '<div class="muted small mt" style="text-align:center">Saved automatically. Tap ‹ Home or Back anytime — you can resume later.</div><button class="btn btn-primary btn-block mt" data-act="finishBottom">✓ Finish workout</button>' : ''}<button class="btn btn-danger btn-block mt" data-act="delWorkout">Delete workout</button>`;
   app.innerHTML = h;
 }
 
@@ -361,10 +391,8 @@ function addExercise() {
   save(); renderEditor();
   const cards = document.querySelectorAll('.ex-card'); cards[cards.length - 1]?.scrollIntoView({block: 'center'});
 }
-function cleanWorkout(w) {
-  for (const e of w.exercises) e.sets = e.sets.filter(filled);
-  w.exercises = w.exercises.filter(e => e.sets.length);
-}
+// On finish: drop blank set rows but keep the exercise list.
+function cleanWorkout(w) { for (const e of w.exercises) e.sets = e.sets.filter(filled); }
 
 app.addEventListener('click', ev => {
   const b = ev.target.closest('[data-act]'); if (!b) return;
@@ -374,7 +402,7 @@ app.addEventListener('click', ev => {
   switch (act) {
     case 'new': state.picking = true; render(); window.scrollTo(0, 0); break;
     case 'startBlank': case 'startTpl': {
-      const nw = {id: uid(), date: todayISO(), notes: '', exercises: [], created: Date.now()};
+      const nw = {id: uid(), date: todayISO(), notes: '', exercises: [], created: Date.now(), status: 'in_progress'};
       const d = act === 'startTpl' && routine().find(x => x.id === b.dataset.tpl);
       if (d) {
         nw.template = d.id; nw.templateName = d.name; if (d.note) nw.templateNote = d.note;
@@ -383,6 +411,7 @@ app.addEventListener('click', ev => {
       db.workouts.push(nw); save(); state.picking = false; state.editing = nw.id; render(); window.scrollTo(0, 0); break;
     }
     case 'cancelPick': state.picking = false; render(); break;
+    case 'finishBottom': finishWorkout(); break;
     case 'toggleDone': { const st = w.exercises[ei].sets[si]; st.done = !st.done; save(); renderEditor(); break; }
     case 'open': state.editing = b.dataset.id; render(); window.scrollTo(0, 0); break;
     case 'addEx': addExercise(); break;
@@ -414,14 +443,18 @@ app.addEventListener('click', ev => {
 });
 $('#topAction').addEventListener('click', ev => {
   if (ev.target.closest('[data-act="cancelPick"]')) { state.picking = false; render(); return; }
-  if (!ev.target.closest('[data-act="done"]')) return;
-  const w = current();
-  if (w) { cleanWorkout(w); if (!w.exercises.length && !w.notes.trim()) db.workouts = db.workouts.filter(x => x.id !== w.id); else toast('Workout saved'); save(); }
-  state.editing = null; render(); window.scrollTo(0, 0);
+  if (ev.target.closest('[data-act="exitWorkout"]')) { save(); state.editing = null; render(); window.scrollTo(0, 0); toast('Workout saved — resume anytime'); return; }
+  if (ev.target.closest('[data-act="done"]')) finishWorkout();
 });
+function finishWorkout() {
+  const w = current();
+  if (w) { const was = inProgress(w); cleanWorkout(w); if (was) { delete w.status; w.finished = Date.now(); } save(); toast(was ? 'Workout finished 💪' : 'Workout saved'); }
+  state.editing = null; render(); window.scrollTo(0, 0);
+}
 app.addEventListener('input', ev => {
   const t = ev.target, w = current();
   if ((t.id === 'dayName' || t.id === 'dayNote') && state.progDay) { const d = routine().find(x => x.id === state.progDay); if (d) { if (t.id === 'dayName') { if (t.value.trim()) d.name = t.value.trim().slice(0, 60); } else d.note = t.value.trim(); save(); } return; }
+  if (w && (t.dataset.k || t.dataset.f)) w.updated = Date.now();
   if (t.dataset.k && w) { w.exercises[+t.dataset.ei].sets[+t.dataset.si][t.dataset.k] = t.value.trim(); save(); }
   else if (t.dataset.f && w) { w[t.dataset.f] = t.value; save(); }
   else if (t.id === 'exName') {
@@ -455,7 +488,7 @@ function validateImport(d) {
       return ex;
     })
   }));
-  d.workouts.forEach((w, i) => { for (const k of ['template', 'templateName', 'templateNote']) if (w[k]) workouts[i][k] = String(w[k]); });
+  d.workouts.forEach((w, i) => { for (const k of ['template', 'templateName', 'templateNote']) if (w[k]) workouts[i][k] = String(w[k]); if (w.status === 'in_progress') workouts[i].status = 'in_progress'; for (const k of ['finished', 'updated']) if (+w[k]) workouts[i][k] = +w[k]; });
   const byDate = new Map();
   for (const e of (Array.isArray(d.weights) ? d.weights : [])) { const lbs = num(e.lbs); if (/^\d{4}-\d{2}-\d{2}$/.test(e.date) && lbs != null) byDate.set(e.date, {date: e.date, lbs}); }
   return {version: 1, workouts, weights: [...byDate.values()]};

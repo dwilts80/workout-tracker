@@ -74,3 +74,8 @@ select{font:inherit;width:100%;background:#0b1222;color:var(--text);border:1px s
 .list-item.current{outline:2px solid var(--pc)}
 .dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--pc);margin-right:8px}
 .prog-btns .btn{min-width:44px}.btn:disabled{opacity:.35}
+.resume-card{background:#14321f;border:2px solid var(--accent)}
+.resume-card .t{color:var(--accent);font-size:17px}
+.badge-ip{background:#f59e0b;color:#1c1300}
+.ip-note{border:1px solid #f59e0b}
+.ip-note .t{font-weight:700}
