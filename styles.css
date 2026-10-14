@@ -93,3 +93,13 @@ body.has-rest{padding-bottom:calc(150px + env(safe-area-inset-bottom))}
 .sets td.t{width:76px}
 .hold-btn{width:72px;height:42px;padding:0;border-radius:12px;background:#1e3a5f;color:#bfdbfe;font-weight:700;font-size:15px}
 .hold-btn.run{background:#f59e0b;color:#1c1300}
+.warmup-sec{border:2px solid #0ea5e9;border-radius:16px;padding:8px;margin-bottom:12px;background:#0c1d2e}
+.wu-head{display:flex;gap:8px;align-items:center;margin-bottom:6px}
+.wu-toggle{display:flex;flex-direction:column;align-items:flex-start;background:none;padding:6px 4px;text-align:left}
+.wu-toggle .t{font-weight:700;color:#7dd3fc}
+.warmup-sec .ex-card{background:#132a3f}
+.setting-row{display:flex;gap:12px;align-items:center;cursor:pointer}
+.setting-row input{width:24px;height:24px;flex:none;accent-color:var(--accent)}
+.drive-btn{font-size:18px;padding:16px}
+.backup-nudge{border:1px dashed #60a5fa;background:#0f1f38}
+.backup-nudge .t{color:#93c5fd}

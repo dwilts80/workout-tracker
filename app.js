@@ -2,7 +2,7 @@
 /* Workout Tracker — plain JS, data in localStorage. */
 const KEY = 'workoutTracker.v1'; // legacy single-profile key (migrated into 'Me')
 const KEY2 = 'workoutTracker.v2';
-const APP_VERSION = 'v9 · stretch + routine edits';
+const APP_VERSION = 'v10 · stretch warm-up';
 const $ = s => document.querySelector(s);
 const app = $('#app');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -148,7 +148,7 @@ function prefillSets(name, fields, n, excludeId, date, target) {
 }
 function bestWeight(name) {
   let best = null;
-  for (const w of db.workouts) for (const e of w.exercises) if (sameEx(e.name, name))
+  for (const w of db.workouts) for (const e of w.exercises) if (!e.warmup && sameEx(e.name, name))
     for (const s of e.sets.filter(performed)) { const wt = num(s.weight); if (wt != null && (best == null || wt > best.weight)) best = {weight: wt, reps: s.reps, date: w.date}; }
   return best;
 }
@@ -217,7 +217,9 @@ const restSecs = e => e.rest === 'heavy' ? 150 : e.rest === 'light' ? 75 : 90;
 const mmss = ms => { const t = Math.max(0, Math.ceil(ms / 1000)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; };
 const getRest = () => { try { return JSON.parse(localStorage.getItem(REST_KEY)); } catch (e) { return null; } };
 const setRest = r => { if (r) localStorage.setItem(REST_KEY, JSON.stringify(r)); else localStorage.removeItem(REST_KEY); tick(); };
+const warmupOn = () => activeProfile().warmup !== false && !window.__WT_NO_WARMUP;
 function maybeStartRest(w, ex) {
+  if (ex.warmup) return;
   const f = fieldsOf(ex);
   if (w.template === 'stretch' || f.includes('sec') || f.includes('min') || f.includes('done')) return;
   const secs = restSecs(ex);
@@ -275,13 +277,13 @@ function renderHome() {
   setHeader('Workouts');
   const ws = sortedWorkouts();
   const names = exerciseNames();
-  let h = resumeCards() + `<button class="btn ${drafts().length ? '' : 'btn-primary '}btn-block" data-act="new">＋ Start ${drafts().length ? 'new ' : ''}workout</button><div class="mt"></div>`;
+  let h = (backupDue() ? `<button class="list-item backup-nudge" data-act="gotoBackup"><div class="grow"><div class="t">☁️ Time for a backup</div><div class="muted small">${store.lastBackup ? 'Last backup was over a week ago.' : 'You haven’t backed up yet.'} Save a copy to Google Drive.</div></div><span class="chev">›</span></button>` : '') + resumeCards() + `<button class="btn ${drafts().length ? '' : 'btn-primary '}btn-block" data-act="new">＋ Start ${drafts().length ? 'new ' : ''}workout</button><div class="mt"></div>`;
   if (!ws.length) h += `<div class="empty">No workouts yet.<br>Tap <b>Start workout</b> to log your first one.</div>`;
   else {
     h += `<h2 style="font-size:15px;color:var(--muted);margin:8px 2px">History</h2>`;
     for (const w of ws) {
       const sets = filledSets(w);
-      const exNames = w.exercises.map(e => e.name).filter(Boolean);
+      const exNames = w.exercises.filter(e => !e.warmup).map(e => e.name).filter(Boolean).concat(w.exercises.some(e => e.warmup) ? ['+ warm-up stretch'] : []);
       h += `<button class="list-item" data-act="open" data-id="${w.id}"><div class="grow"><div class="t">${esc(fmtDate(w.date))}${inProgress(w) ? ' <span class="badge badge-ip">In progress</span>' : ''}</div>${w.templateName ? `<div class="small" style="color:var(--accent)">${esc(w.templateName)}</div>` : ''}
         <div class="muted small">${exNames.length ? esc(exNames.join(' · ')) : 'No exercises'}</div>
         <div class="muted small">${w.exercises.length} exercise${w.exercises.length === 1 ? '' : 's'} · ${sets} set${sets === 1 ? '' : 's'}${w.notes ? ' · 📝' : ''}</div></div><span class="chev">›</span></button>`;
@@ -316,7 +318,12 @@ function renderEditor() {
   let h = `<div class="card"><div class="row"><div class="grow"><label>Date</label><input type="date" data-f="date" value="${esc(w.date)}"></div></div>
     <div class="mt"><label>Notes (optional)</label><textarea data-f="notes" placeholder="How did it feel?">${esc(w.notes || '')}</textarea></div></div>`;
   if (w.templateName) h += `<div class="card tpl-banner"><div class="t">${esc(w.templateName)}</div>${w.templateNote ? `<div class="mt small">📌 ${esc(w.templateNote)}</div>` : ''}${w.template === 'stretch' ? '' : `<div class="mt small muted">⏱ ${esc(REST_NOTE)}</div>`}</div>`;
+  const wuCount = w.exercises.filter(e => e.warmup).length, wuOpen = w.warmup !== 'collapsed';
+  const wuDone = w.exercises.filter(e => e.warmup).reduce((n, e) => n + e.sets.filter(st => st.ok !== false).length, 0), wuTotal = w.exercises.filter(e => e.warmup).reduce((n, e) => n + e.sets.length, 0);
   w.exercises.forEach((e, ei) => {
+    if (e.warmup && (ei === 0 || !w.exercises[ei - 1].warmup)) h += `<div class="warmup-sec"><div class="wu-head"><button class="wu-toggle grow" data-act="wuToggle"><span class="t">${wuOpen ? '▾' : '▸'} Warm-up stretch (~11 min)</span><span class="muted small">${wuDone}/${wuTotal} holds done · ${wuCount} stretches</span></button><button class="btn btn-sm" data-act="wuSkip">Skip stretch</button></div>`;
+    const wuEnd = () => { if (e.warmup && (ei === w.exercises.length - 1 || !w.exercises[ei + 1].warmup)) h += `</div>`; };
+    if (e.warmup && !wuOpen) { wuEnd(); return; }
     const prev = lastTime(e.name, w.id, w.date);
     const fields = fieldsOf(e);
     const best = fields.includes('weight') ? bestWeight(e.name) : null;
@@ -335,6 +342,7 @@ function renderEditor() {
         <td class="x"><button class="btn-icon" data-act="delSet" data-ei="${ei}" data-si="${si}" aria-label="Remove set">✕</button></td></tr>`;
     });
     h += `</tbody></table><button class="btn btn-sm mt" data-act="addSet" data-ei="${ei}">＋ Add ${fields.includes('done') ? 'round' : 'set'}</button></div>`;
+    wuEnd();
   });
   h += `<div class="card"><label>Add exercise</label><div class="row"><input class="grow" id="exName" list="exList" placeholder="e.g. Bench Press" autocomplete="off" enterkeyhint="done">
     <button class="btn btn-primary" data-act="addEx">Add</button></div>
@@ -404,7 +412,8 @@ function renderProgram() {
   const d = state.progDay && r.find(x => x.id === state.progDay);
   if (!d) {
     setHeader('Program');
-    let h = `<div class="muted small" style="margin:0 2px 10px">${pn}'s routine. Changes apply to ${pn}'s future workouts only.</div>`;
+    let h = `<div class="muted small" style="margin:0 2px 10px">${pn}'s routine. Changes apply to ${pn}'s future workouts only.</div>
+      <label class="card setting-row"><input type="checkbox" id="wuSetting" ${activeProfile().warmup !== false ? 'checked' : ''}><span><b>Start workouts with stretch</b><br><span class="muted small">Adds ${pn}'s Stretch routine as a warm-up to Days 1–5</span></span></label>`;
     r.forEach((x, i) => { h += `<button class="list-item" data-act="progOpen" data-day="${x.id}"><div class="grow"><div class="t">${esc(x.name)}</div><div class="muted small">${x.exercises.length} exercises · ${esc(x.exercises.map(e => e.name).join(' · '))}</div></div><span class="chev">✎</span></button>`; });
     app.innerHTML = h; return;
   }
@@ -464,12 +473,16 @@ function routineAction(act, b) {
 
 function renderData() {
   setHeader('Backup');
-  const sets = db.workouts.reduce((n, w) => n + w.exercises.reduce((m, e) => m + e.sets.length, 0), 0);
+  const sets = db.workouts.reduce((n, w) => n + w.exercises.reduce((m, e) => m + e.sets.filter(performed).length, 0), 0);
   const pn = esc(activeProfile().name);
   app.innerHTML = `<div class="card"><h2>${pn}'s data</h2><div class="muted">Saved on this device only (browser storage).<br>${db.workouts.length} workouts · ${sets} sets · ${db.weights.length} weight entries</div>
     <div class="muted small mt">All profiles: ${store.profiles.map(p => `${esc(p.name)} (${p.data.workouts.length} workouts, ${p.data.weights.length} weights)`).join(' · ')}</div></div>
-    <div class="card"><h2>Export</h2><div class="muted small">Download a JSON backup of every profile's workouts and weight entries.</div><button class="btn btn-primary btn-block mt" data-act="export">Export JSON</button></div>
-    <div class="card"><h2>Import</h2><div class="muted small">Full backups replace all profiles on this device. Older single-profile backups are imported into the current profile (${pn}).</div><button class="btn btn-block mt" data-act="import">Import JSON…</button></div>
+    <div class="card backup-card"><h2>Back up</h2><div class="muted small">All profiles: workouts, weights and routines.</div>
+      <div class="small mt" id="lastBackup">${store.lastBackup ? `Last backup: <b>${esc(new Date(store.lastBackup).toLocaleString(undefined, {month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'}))}</b>` : 'Last backup: <b>never</b>'}</div>
+      <button class="btn btn-primary btn-block mt drive-btn" data-act="shareBackup">☁️ Save to Google Drive</button>
+      <div class="muted small mt">Opens your phone's share menu — pick <b>Drive</b>.</div>
+      <button class="btn btn-block mt" data-act="export">Download JSON file</button></div>
+    <div class="card"><h2>Restore</h2><div class="muted small">Full backups replace all profiles on this device. Older single-profile backups are imported into the current profile (${pn}).</div><button class="btn btn-block mt" data-act="import">Restore from file / Google Drive</button></div>
     <div class="card"><h2>Reset</h2><button class="btn btn-danger btn-block" data-act="wipe">Delete ${pn}'s data</button></div>
     <div class="muted small" id="appVersion" style="text-align:center">App version ${esc(APP_VERSION)}</div>`;
 }
@@ -497,11 +510,36 @@ function addExercise() {
 // On finish: drop blank set rows but keep the exercise list.
 function cleanWorkout(w, keepUnchecked) {
   for (const e of w.exercises) {
-    if (keepUnchecked) for (const st of e.sets) if (st.ok === false && filled(st)) st.ok = true;
+    if (keepUnchecked && !e.warmup) for (const st of e.sets) if (st.ok === false && filled(st)) st.ok = true;
     e.sets = e.sets.filter(performed);
   }
 }
-const hasUncheckedWithValues = w => w.exercises.some(e => e.sets.some(st => st.ok === false && filled(st)));
+const hasUncheckedWithValues = w => w.exercises.some(e => !e.warmup && e.sets.some(st => st.ok === false && filled(st)));
+
+/* ---------- Backups ---------- */
+const backupName = () => `workout-backup-${todayISO()}.json`;
+function backupData() {
+  save();
+  return {app: 'workout-tracker', version: 2, exportedAt: new Date().toISOString(), active: store.active, profiles: store.profiles.map(p => ({id: p.id, name: p.name, workouts: p.data.workouts, weights: p.data.weights, routine: p.routine, warmup: p.warmup !== false}))};
+}
+function markBackup() { store.lastBackup = Date.now(); save(); if (state.tab === 'data') renderData(); }
+function downloadBackup(out) {
+  const blob = new Blob([JSON.stringify(out, null, 2)], {type: 'application/json'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = backupName(); document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000); markBackup();
+}
+async function shareBackup() {
+  const out = backupData();
+  let file = null;
+  try { file = new File([JSON.stringify(out, null, 2)], backupName(), {type: 'application/json'}); } catch (e) {}
+  if (file && navigator.canShare && navigator.share && navigator.canShare({files: [file]})) {
+    try { await navigator.share({files: [file], title: 'Workout backup', text: 'Workout tracker backup ' + todayISO()}); markBackup(); toast('Backup shared'); }
+    catch (e) { if (e && e.name !== 'AbortError') { downloadBackup(out); toast('Saved to Downloads, upload it to Drive'); } }
+    return;
+  }
+  downloadBackup(out); toast('Saved to Downloads, upload it to Drive');
+}
+const backupDue = () => store.profiles.some(p => p.data.workouts.length) && (!store.lastBackup || Date.now() - store.lastBackup > 7 * 86400000);
 
 app.addEventListener('click', ev => {
   const b = ev.target.closest('[data-act]'); if (!b) return;
@@ -515,13 +553,20 @@ app.addEventListener('click', ev => {
       const d = act === 'startTpl' && routine().find(x => x.id === b.dataset.tpl);
       if (d) {
         nw.template = d.id; nw.templateName = d.name; if (d.note) nw.templateNote = d.note;
-        nw.exercises = d.exercises.map(t => { const fields = t.fields || WR; const ex = {name: t.name, target: t.target, sets: prefillSets(t.name, fields, t.sets, nw.id, nw.date, t.target)}; if (t.fields) ex.fields = fields; if (t.rest) ex.rest = t.rest; if (t.note) ex.note = t.note; return ex; });
+        const fromTpl = t => { const fields = t.fields || WR; const ex = {name: t.name, target: t.target, sets: prefillSets(t.name, fields, t.sets, nw.id, nw.date, t.target)}; if (t.fields) ex.fields = fields; if (t.rest) ex.rest = t.rest; if (t.note) ex.note = t.note; return ex; };
+        nw.exercises = d.exercises.map(fromTpl);
+        const sd = routine().find(x => x.id === 'stretch');
+        if (/^d[1-5]$/.test(d.id) && warmupOn() && sd && sd.exercises.length) {
+          nw.exercises = [...sd.exercises.map(t => ({...fromTpl(t), warmup: true})), ...nw.exercises]; nw.warmup = 'open';
+        }
       }
       db.workouts.push(nw); save(); state.picking = false; state.editing = nw.id; render(); window.scrollTo(0, 0); break;
     }
     case 'cancelPick': state.picking = false; render(); break;
     case 'finishBottom': finishWorkout(); break;
     case 'toggleSet': { const ex = w.exercises[ei], st = ex.sets[si]; st.ok = st.ok === false; w.updated = Date.now(); save(); if (st.ok) maybeStartRest(w, ex); const tr = b.closest('tr'); tr.classList.toggle('set-done', st.ok); b.classList.toggle('on', st.ok); b.setAttribute('aria-pressed', st.ok); break; }
+    case 'wuToggle': w.warmup = w.warmup === 'collapsed' ? 'open' : 'collapsed'; save(); renderEditor(); break;
+    case 'wuSkip': if (confirm('Skip the warm-up stretch for this workout?')) { if (holdTimer && w.exercises[holdTimer.ei] && w.exercises[holdTimer.ei].warmup) holdTimer = null; w.exercises = w.exercises.filter(e => !e.warmup); w.warmup = 'skipped'; w.updated = Date.now(); save(); renderEditor(); toast('Stretch skipped'); } break;
     case 'holdTimer': {
       if (holdTimer && holdTimer.wid === w.id && holdTimer.ei === ei && holdTimer.si === si) { holdTimer = null; renderEditor(); break; }
       const secs = Math.max(1, parseInt(w.exercises[ei].sets[si].sec) || holdFromTarget(w.exercises[ei].target) || 30);
@@ -545,12 +590,12 @@ app.addEventListener('click', ev => {
     case 'editWeight': state.weightEditDate = b.dataset.date; renderWeight(); window.scrollTo(0, 0); break;
     case 'cancelWeight': state.weightEditDate = null; renderWeight(); break;
     case 'delWeight': if (confirm('Delete this weight entry?')) { db.weights = db.weights.filter(e => e.date !== b.dataset.date); if (state.weightEditDate === b.dataset.date) state.weightEditDate = null; save(); renderWeight(); } break;
+    case 'shareBackup': shareBackup(); break;
+    case 'gotoBackup': finishEditing(); state.tab = 'data'; render(); window.scrollTo(0, 0); break;
     case 'export': {
       save();
-      const out = {app: 'workout-tracker', version: 2, exportedAt: new Date().toISOString(), active: store.active, profiles: store.profiles.map(p => ({id: p.id, name: p.name, workouts: p.data.workouts, weights: p.data.weights, routine: p.routine}))};
-      const blob = new Blob([JSON.stringify(out, null, 2)], {type: 'application/json'});
-      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `workouts-backup-${todayISO()}.json`; document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(a.href), 1000); toast('Backup exported'); break;
+      const out = {app: 'workout-tracker', version: 2, exportedAt: new Date().toISOString(), active: store.active, profiles: store.profiles.map(p => ({id: p.id, name: p.name, workouts: p.data.workouts, weights: p.data.weights, routine: p.routine, warmup: p.warmup !== false}))};
+      downloadBackup(out); toast('Backup downloaded'); break;
     }
     case 'import': $('#importFile').click(); break;
     case 'wipe': if (confirm(`Delete ALL of ${activeProfile().name}'s workouts and weight entries?`)) { db = emptyData(); save(); renderData(); toast('Data deleted'); } break;
@@ -568,6 +613,7 @@ function finishWorkout() {
 }
 app.addEventListener('input', ev => {
   const t = ev.target, w = current();
+  if (t.id === 'wuSetting') { activeProfile().warmup = t.checked; save(); toast(t.checked ? 'Warm-up stretch on' : 'Warm-up stretch off'); return; }
   if ((t.id === 'dayName' || t.id === 'dayNote') && state.progDay) { const d = routine().find(x => x.id === state.progDay); if (d) { if (t.id === 'dayName') { if (t.value.trim()) d.name = t.value.trim().slice(0, 60); } else d.note = t.value.trim(); save(); } return; }
   if (w && (t.dataset.k || t.dataset.f)) w.updated = Date.now();
   if (t.dataset.k && w) {
@@ -611,16 +657,17 @@ function validateImport(d) {
       })};
       if (Array.isArray(e.fields)) ex.fields = e.fields.filter(k => k in FIELD);
       for (const k of ['target', 'rest', 'note']) if (e[k]) ex[k] = String(e[k]);
+      if (e.warmup) ex.warmup = true;
       return ex;
     })
   }));
-  d.workouts.forEach((w, i) => { for (const k of ['template', 'templateName', 'templateNote']) if (w[k]) workouts[i][k] = String(w[k]); if (w.status === 'in_progress') workouts[i].status = 'in_progress'; for (const k of ['finished', 'updated']) if (+w[k]) workouts[i][k] = +w[k]; });
+  d.workouts.forEach((w, i) => { for (const k of ['template', 'templateName', 'templateNote']) if (w[k]) workouts[i][k] = String(w[k]); if (w.status === 'in_progress') workouts[i].status = 'in_progress'; if (['open', 'collapsed', 'skipped'].includes(w.warmup)) workouts[i].warmup = w.warmup; for (const k of ['finished', 'updated']) if (+w[k]) workouts[i][k] = +w[k]; });
   const byDate = new Map();
   for (const e of (Array.isArray(d.weights) ? d.weights : [])) { const lbs = num(e.lbs); if (/^\d{4}-\d{2}-\d{2}$/.test(e.date) && lbs != null) byDate.set(e.date, {date: e.date, lbs}); }
   return {version: 1, workouts, weights: [...byDate.values()]};
 }
 function validateFullImport(raw) {
-  const profiles = raw.profiles.map((p, i) => ({id: String(p.id || 'p' + i), name: String(p.name || 'Profile ' + (i + 1)), data: validateImport({workouts: p.workouts || (p.data && p.data.workouts) || [], weights: p.weights || (p.data && p.data.weights) || []}), routine: Array.isArray(p.routine) && p.routine.length ? cleanRoutine(p.routine) : seedRoutine(String(p.id || ''))}));
+  const profiles = raw.profiles.map((p, i) => ({id: String(p.id || 'p' + i), name: String(p.name || 'Profile ' + (i + 1)), data: validateImport({workouts: p.workouts || (p.data && p.data.workouts) || [], weights: p.weights || (p.data && p.data.weights) || []}), routine: Array.isArray(p.routine) && p.routine.length ? cleanRoutine(p.routine) : seedRoutine(String(p.id || '')), warmup: p.warmup !== false}));
   if (!profiles.length) throw new Error('Backup has no profiles');
   return {version: 2, active: profiles.some(p => p.id === raw.active) ? raw.active : profiles[0].id, profiles};
 }
@@ -651,7 +698,7 @@ $('#importFile').addEventListener('change', async ev => {
     if (raw && Array.isArray(raw.profiles)) {
       const ns = validateFullImport(raw);
       if (!confirm(`Import ${ns.profiles.length} profiles (${ns.profiles.map(p => `${p.name}: ${p.data.workouts.length} workouts`).join(', ')})? This replaces all profiles on this device.`)) return;
-      store = ns; db = activeProfile().data; save();
+      const lb = store.lastBackup; store = ns; if (lb) store.lastBackup = lb; db = activeProfile().data; save();
     } else {
       const d = validateImport(raw);
       if (!confirm(`Import ${d.workouts.length} workouts and ${d.weights.length} weight entries into ${activeProfile().name}? This replaces ${activeProfile().name}'s current data.`)) return;
