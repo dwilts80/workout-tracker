@@ -24,7 +24,10 @@ const PROGRAM = [
     {name: 'Step-Up → Knee Drive', sets: 3, target: '3 × 8 each'},
     {name: 'Hamstring Curl', sets: 3, target: '3 × 10–12'},
     {name: 'Calf Raise', sets: 3, target: '3 × 15'},
-    {name: 'Core Circuit', sets: 3, target: '3 rounds', fields: ['done'], note: 'Dead bugs → reverse crunches → side plank variation → bird dogs. Controlled.'}]},
+    {name: 'Circuit: Dead Bugs', sets: 3, target: '3 rounds × 10 reps (each side)', fields: ['reps'], circuit: true, note: 'Core circuit — do all 4 movements each round, controlled, no rest between.'},
+    {name: 'Circuit: Reverse Crunches', sets: 3, target: '3 rounds × 10 reps', fields: ['reps'], circuit: true},
+    {name: 'Circuit: Side Plank', sets: 6, target: '3 rounds × 15 s (2 rows per round: left, right)', fields: ['sec'], circuit: true},
+    {name: 'Circuit: Bird Dogs', sets: 3, target: '3 rounds × 10 reps (each side)', fields: ['reps'], circuit: true}]},
   {id: 'd4', name: 'Day 4 · Upper Body + Core', note: '', exercises: [
     {name: 'One-Arm Shoulder Press', sets: 4, target: '4 × 6–8', rest: 'heavy'},
     {name: 'One-Arm Row', sets: 4, target: '4 × 8–10', rest: 'heavy'},
@@ -54,4 +57,11 @@ const PROGRAM = [
     {name: 'Cross-Body Shoulder Stretch (left; band or wall assist)', sets: 1, target: '1 × 30 s', fields: ['sec']},
     {name: 'Neck Side Stretch', sets: 2, target: '2 × 20 s (each side)', fields: ['sec']}]},
 ];
+// 'Each side' exercises: rows alternate R / L, so sets = total rows (3 per side = 6 rows). Stretch rows and Side Plank already list both sides.
+PROGRAM.forEach(d => d.exercises.forEach(e => {
+  if (/each/i.test(e.target) || e.name === 'Circuit: Side Plank') {
+    e.each = true;
+    if (d.id !== 'stretch' && e.name !== 'Circuit: Side Plank') e.sets *= 2;
+  }
+}));
 const REST_NOTE = 'Rest 2–3 min on heavy compounds, 60–90 s on accessories. Stop each set with 1–3 reps in reserve (RIR).';

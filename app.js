@@ -2,7 +2,7 @@
 /* Workout Tracker — plain JS, data in localStorage. */
 const KEY = 'workoutTracker.v1'; // legacy single-profile key (migrated into 'Me')
 const KEY2 = 'workoutTracker.v2';
-const APP_VERSION = 'v10 · stretch warm-up';
+const APP_VERSION = 'v11 · core circuit';
 const $ = s => document.querySelector(s);
 const app = $('#app');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -59,6 +59,12 @@ function renameCooper(r) {
   for (const [id, map] of Object.entries(COOPER_RENAMES)) { const d = r.find(x => x.id === id); if (d) for (const e of d.exercises) if (map[e.name]) e.name = map[e.name]; }
   return r;
 }
+function migrateCircuit(r) {
+  const d = r.find(x => x.id === 'd3'); if (!d) return r;
+  const i = d.exercises.findIndex(e => e.name === 'Core Circuit' && e.sets === 3 && e.target === '3 rounds' && (e.fields || []).join() === 'done');
+  if (i >= 0) d.exercises.splice(i, 1, ...clone(PROGRAM.find(x => x.id === 'd3').exercises.filter(e => e.circuit)));
+  return r;
+}
 function seedRoutine(pid) {
   const r = clone(PROGRAM);
   if (pid === 'cooper') renameCooper(r);
@@ -76,6 +82,8 @@ function cleanRoutine(r) {
       if (e.rest === 'heavy' || e.rest === 'light') x.rest = e.rest;
       if (Array.isArray(e.fields) && TYPES[typeOf(e.fields)].join() === e.fields.join() && e.fields.join() !== 'weight,reps') x.fields = e.fields.slice();
       if (e.note) x.note = String(e.note);
+      if (e.circuit) x.circuit = true;
+      if (e.each) x.each = true;
       return x;
     })}));
 }
@@ -86,7 +94,7 @@ let state = {tab: 'home', editing: null, picking: false, weightEditDate: null, p
 
 const emptyData = () => ({version: 1, workouts: [], weights: []});
 const cleanData = d => ({version: 1, workouts: Array.isArray(d && d.workouts) ? d.workouts : [], weights: Array.isArray(d && d.weights) ? d.weights : []});
-function defaultStore() { return {version: 2, stretchAdded: true, renamedDad: true, cooperRenamed: true, dadLeftRenamed: true, active: 'me', profiles: [{id: 'me', name: 'Dad', data: emptyData(), routine: seedRoutine('me')}, {id: 'cooper', name: 'Cooper', data: emptyData(), routine: seedRoutine('cooper')}]}; }
+function defaultStore() { return {version: 2, eachV11: true, circuitV11: true, stretchAdded: true, renamedDad: true, cooperRenamed: true, dadLeftRenamed: true, active: 'me', profiles: [{id: 'me', name: 'Dad', data: emptyData(), routine: seedRoutine('me')}, {id: 'cooper', name: 'Cooper', data: emptyData(), routine: seedRoutine('cooper')}]}; }
 function loadStore() {
   try {
     const st = JSON.parse(localStorage.getItem(KEY2));
@@ -98,6 +106,8 @@ function loadStore() {
       if (!st.cooperRenamed) { st.profiles.forEach(p => { if (p.id === 'cooper') renameCooper(p.routine); }); st.cooperRenamed = true; localStorage.setItem(KEY2, JSON.stringify(st)); }
       // One-time: add the Stretch day to existing profiles (by id) if absent.
       if (!st.stretchAdded) { st.profiles.forEach(p => { if ((p.id === 'me' || p.id === 'cooper') && !p.routine.some(d => d.id === 'stretch')) p.routine.push(clone(PROGRAM.find(d => d.id === 'stretch'))); }); st.stretchAdded = true; localStorage.setItem(KEY2, JSON.stringify(st)); }
+      if (!st.eachV11) { st.profiles.forEach(p => { if (p.id === 'me' || p.id === 'cooper') p.routine.forEach(d => d.exercises.forEach(e => { if (e.each === undefined && (/each/i.test(e.target || '') || e.name === 'Circuit: Side Plank')) { e.each = true; if (d.id !== 'stretch' && e.name !== 'Circuit: Side Plank') e.sets = Math.min(20, e.sets * 2); } })); }); st.eachV11 = true; localStorage.setItem(KEY2, JSON.stringify(st)); }
+      if (!st.circuitV11) { st.profiles.forEach(p => { if (p.id === 'me' || p.id === 'cooper') migrateCircuit(p.routine); }); st.circuitV11 = true; localStorage.setItem(KEY2, JSON.stringify(st)); }
       if (!st.dadLeftRenamed) { st.profiles.forEach(p => { if (p.id === 'me') migrateDad(p.routine); }); st.dadLeftRenamed = true; localStorage.setItem(KEY2, JSON.stringify(st)); }
       if (!st.renamedDad) { st.profiles.forEach(p => { if (p.id === 'me' && p.name === 'Me') p.name = 'Dad'; }); st.renamedDad = true; localStorage.setItem(KEY2, JSON.stringify(st)); }
       return st;
@@ -136,9 +146,11 @@ function lastTime(name, excludeId, beforeDate) {
 /** n set rows pre-filled set-by-set from last time (copy the last past set if fewer); unchecked. */
 const holdFromTarget = t => { const m = /(\d+)\s*(s|sec)\b/i.exec(t || ''); return m ? m[1] : ''; };
 function prefillSets(name, fields, n, excludeId, date, target) {
-  const hold = fields.join() === 'sec' ? holdFromTarget(target) : '';
-  if (hold) return Array.from({length: n}, () => ({...blankSet(fields), sec: hold}));
   const prev = lastTime(name, excludeId, date);
+  const hold = fields.join() === 'sec' && !(prev && prev.fields.join() === 'sec') ? holdFromTarget(target) : '';
+  if (hold) return Array.from({length: n}, () => ({...blankSet(fields), sec: hold}));
+  const rm = fields.join() === 'reps' && !prev && /×\s*(\d+)\s*reps/.exec(target || '');
+  if (rm) return Array.from({length: n}, () => ({...blankSet(fields), reps: rm[1]}));
   return Array.from({length: n}, (_, i) => {
     const o = blankSet(fields);
     const ps = prev && prev.fields.join() === fields.join() && prev.sets.length ? prev.sets[Math.min(i, prev.sets.length - 1)] : null;
@@ -217,9 +229,10 @@ const restSecs = e => e.rest === 'heavy' ? 150 : e.rest === 'light' ? 75 : 90;
 const mmss = ms => { const t = Math.max(0, Math.ceil(ms / 1000)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; };
 const getRest = () => { try { return JSON.parse(localStorage.getItem(REST_KEY)); } catch (e) { return null; } };
 const setRest = r => { if (r) localStorage.setItem(REST_KEY, JSON.stringify(r)); else localStorage.removeItem(REST_KEY); tick(); };
+const sideOf = (e, s, si) => (s && s.side) || (si % 2 ? 'L' : 'R');
 const warmupOn = () => activeProfile().warmup !== false && !window.__WT_NO_WARMUP;
 function maybeStartRest(w, ex) {
-  if (ex.warmup) return;
+  if (ex.warmup || ex.circuit) return;
   const f = fieldsOf(ex);
   if (w.template === 'stretch' || f.includes('sec') || f.includes('min') || f.includes('done')) return;
   const secs = restSecs(ex);
@@ -335,9 +348,9 @@ function renderEditor() {
     e.sets.forEach((s, si) => {
       const ps = prev && prev.sets[si];
       const isRound = fields.includes('done'), chk = !isRound && s.ok !== false;
-      h += `<tr class="${chk || (isRound && s.done) ? 'set-done' : ''}"><td class="n">${si + 1}</td>${fields.map(k => k === 'done'
+      h += `<tr class="${chk || (isRound && s.done) ? 'set-done' : ''}"><td class="n">${si + 1}${e.each ? `<div class="side side-${sideOf(e, s, si)}">${sideOf(e, s, si)}</div>` : ''}</td>${fields.map(k => k === 'done'
         ? `<td><button class="btn round-btn${s.done ? ' on' : ''}" data-act="toggleDone" data-ei="${ei}" data-si="${si}">${s.done ? '✓ Done' : 'Mark done'}</button></td>`
-        : `<td><input inputmode="${FIELD[k].mode}" data-ei="${ei}" data-si="${si}" data-k="${k}" value="${esc(s[k] ?? '')}" placeholder="${ps && ps[k] !== undefined && ps[k] !== '' ? esc(ps[k]) : FIELD[k].ph}" aria-label="${FIELD[k].label}"></td>${k === 'sec' ? `<td class="t"><button class="hold-btn${holdTimer && holdTimer.wid === w.id && holdTimer.ei === ei && holdTimer.si === si ? ' run' : ''}" data-act="holdTimer" data-ei="${ei}" data-si="${si}" aria-label="Start hold timer">▶</button></td>` : ''}`).join('')}
+        : `<td><input inputmode="${FIELD[k].mode}" data-ei="${ei}" data-si="${si}" data-k="${k}" value="${esc(s[k] ?? '')}" placeholder="${ps && ps[k] !== undefined && ps[k] !== '' ? esc(ps[k]) : FIELD[k].ph}" aria-label="${FIELD[k].label}"></td>${k === 'sec' ? `<td class="t"><div class="hold-cell"><button class="hold-btn${holdTimer && holdTimer.wid === w.id && holdTimer.ei === ei && holdTimer.si === si ? ' run' : ''}" data-act="holdTimer" data-ei="${ei}" data-si="${si}" aria-label="Start hold timer">▶</button><div class="adj-row"><button class="adj" data-act="holdAdj" data-d="-5" data-ei="${ei}" data-si="${si}" aria-label="Minus 5 seconds">−5</button><button class="adj" data-act="holdAdj" data-d="5" data-ei="${ei}" data-si="${si}" aria-label="Plus 5 seconds">+5</button></div></div></td>` : ''}`).join('')}
         ${isRound ? '' : `<td class="c"><button class="chk${chk ? ' on' : ''}" data-act="toggleSet" data-ei="${ei}" data-si="${si}" aria-label="Mark set ${si + 1} complete" aria-pressed="${chk}">✓</button></td>`}
         <td class="x"><button class="btn-icon" data-act="delSet" data-ei="${ei}" data-si="${si}" aria-label="Remove set">✕</button></td></tr>`;
     });
@@ -424,6 +437,7 @@ function renderProgram() {
     <div class="row mt"><div style="width:30%"><label>Sets</label><input id="peSets" inputmode="numeric" value="${esc(e.sets || 3)}"></div><div class="grow"><label>Target (text)</label><input id="peTarget" value="${esc(e.target || '')}" placeholder="e.g. 3 × 8–12"></div></div>
     <div class="row mt"><div class="grow"><label>Rest</label><select id="peRest"><option value="">Not set</option><option value="heavy"${e.rest === 'heavy' ? ' selected' : ''}>2–3 min (heavy)</option><option value="light"${e.rest === 'light' ? ' selected' : ''}>60–90 s (accessory)</option></select></div>
       <div class="grow"><label>Log as</label><select id="peType">${Object.entries(TYPE_LABEL).map(([k, l]) => `<option value="${k}"${typeOf(e.fields) === k ? ' selected' : ''}>${l}</option>`).join('')}</select></div></div>
+    <label class="setting-row mt"><input type="checkbox" id="peEach"${e.each ? ' checked' : ''}><span>Each side (rows alternate R / L; sets = total rows)</span></label>
     <div class="mt"><label>Note (optional)</label><input id="peNote" value="${esc(e.note || '')}" placeholder="Cues, substitutions…"></div>
     <div class="row mt"><button class="btn btn-primary grow" data-act="progSaveEx">${idx === -1 ? 'Add' : 'Save'}</button><button class="btn" data-act="progCancelEx">Cancel</button></div></div>`;
   let h = `<div class="card"><label>Day name</label><input id="dayName" value="${esc(d.name)}"><div class="mt"><label>Day note (optional)</label><input id="dayNote" value="${esc(d.note || '')}" placeholder="Focus for the day"></div></div>`;
@@ -458,6 +472,8 @@ function routineAction(act, b) {
       const rest = $('#peRest').value; if (rest) x.rest = rest;
       const t = $('#peType').value; if (t !== 'wr') x.fields = TYPES[t].slice();
       const note = $('#peNote').value.trim(); if (note) x.note = note;
+      if (state.progEdit !== -1 && d.exercises[state.progEdit].circuit) x.circuit = true;
+      if ($('#peEach').checked) x.each = true;
       if (state.progEdit === -1) d.exercises.push(x); else d.exercises[state.progEdit] = x;
       state.progEdit = null; rr(); toast('Saved'); return true;
     }
@@ -502,7 +518,7 @@ function addExercise() {
   const n = prev ? prev.sets.length : tpl ? tpl.sets : 1;
   const ex = {name: canonical, sets: prefillSets(canonical, fields, n, w.id, w.date, tpl && tpl.target)};
   if (fields.join() !== 'weight,reps') ex.fields = fields;
-  if (tpl) { ex.target = tpl.target; if (tpl.rest) ex.rest = tpl.rest; if (tpl.note) ex.note = tpl.note; }
+  if (tpl) { if (tpl.each) ex.each = true; ex.target = tpl.target; if (tpl.rest) ex.rest = tpl.rest; if (tpl.note) ex.note = tpl.note; }
   w.exercises.push(ex);
   save(); renderEditor();
   const cards = document.querySelectorAll('.ex-card'); cards[cards.length - 1]?.scrollIntoView({block: 'center'});
@@ -510,6 +526,7 @@ function addExercise() {
 // On finish: drop blank set rows but keep the exercise list.
 function cleanWorkout(w, keepUnchecked) {
   for (const e of w.exercises) {
+    if (e.each) e.sets.forEach((st, i) => { if (!st.side) st.side = i % 2 ? 'L' : 'R'; });
     if (keepUnchecked && !e.warmup) for (const st of e.sets) if (st.ok === false && filled(st)) st.ok = true;
     e.sets = e.sets.filter(performed);
   }
@@ -553,7 +570,7 @@ app.addEventListener('click', ev => {
       const d = act === 'startTpl' && routine().find(x => x.id === b.dataset.tpl);
       if (d) {
         nw.template = d.id; nw.templateName = d.name; if (d.note) nw.templateNote = d.note;
-        const fromTpl = t => { const fields = t.fields || WR; const ex = {name: t.name, target: t.target, sets: prefillSets(t.name, fields, t.sets, nw.id, nw.date, t.target)}; if (t.fields) ex.fields = fields; if (t.rest) ex.rest = t.rest; if (t.note) ex.note = t.note; return ex; };
+        const fromTpl = t => { const fields = t.fields || WR; const ex = {name: t.name, target: t.target, sets: prefillSets(t.name, fields, t.sets, nw.id, nw.date, t.target)}; if (t.fields) ex.fields = fields; if (t.rest) ex.rest = t.rest; if (t.note) ex.note = t.note; if (t.circuit) ex.circuit = true; if (t.each) ex.each = true; return ex; };
         nw.exercises = d.exercises.map(fromTpl);
         const sd = routine().find(x => x.id === 'stretch');
         if (/^d[1-5]$/.test(d.id) && warmupOn() && sd && sd.exercises.length) {
@@ -567,6 +584,13 @@ app.addEventListener('click', ev => {
     case 'toggleSet': { const ex = w.exercises[ei], st = ex.sets[si]; st.ok = st.ok === false; w.updated = Date.now(); save(); if (st.ok) maybeStartRest(w, ex); const tr = b.closest('tr'); tr.classList.toggle('set-done', st.ok); b.classList.toggle('on', st.ok); b.setAttribute('aria-pressed', st.ok); break; }
     case 'wuToggle': w.warmup = w.warmup === 'collapsed' ? 'open' : 'collapsed'; save(); renderEditor(); break;
     case 'wuSkip': if (confirm('Skip the warm-up stretch for this workout?')) { if (holdTimer && w.exercises[holdTimer.ei] && w.exercises[holdTimer.ei].warmup) holdTimer = null; w.exercises = w.exercises.filter(e => !e.warmup); w.warmup = 'skipped'; w.updated = Date.now(); save(); renderEditor(); toast('Stretch skipped'); } break;
+    case 'holdAdj': {
+      const st = w.exercises[ei].sets[si], d = +b.dataset.d;
+      st.sec = String(Math.max(5, (parseInt(st.sec) || holdFromTarget(w.exercises[ei].target) * 1 || 30) + d)); w.updated = Date.now(); save();
+      const inp = app.querySelector(`input[data-ei="${ei}"][data-si="${si}"][data-k="sec"]`); if (inp) inp.value = st.sec;
+      if (holdTimer && holdTimer.wid === w.id && holdTimer.ei === ei && holdTimer.si === si) holdTimer.end += d * 1000;
+      break;
+    }
     case 'holdTimer': {
       if (holdTimer && holdTimer.wid === w.id && holdTimer.ei === ei && holdTimer.si === si) { holdTimer = null; renderEditor(); break; }
       const secs = Math.max(1, parseInt(w.exercises[ei].sets[si].sec) || holdFromTarget(w.exercises[ei].target) || 30);
@@ -651,12 +675,15 @@ function validateImport(d) {
       const ex = {name: String(e.name || 'Exercise'), sets: (Array.isArray(e.sets) ? e.sets : []).map(s => {
         const o = {weight: s.weight == null ? '' : String(s.weight), reps: s.reps == null ? '' : String(s.reps)};
         for (const k of ['sec', 'min']) if (s[k] != null) o[k] = String(s[k]);
+        if (s.side === 'R' || s.side === 'L') o.side = s.side;
         if (s.done != null) o.done = !!s.done;
         if (s.ok === false) o.ok = false; else if (s.ok === true) o.ok = true;
         return o;
       })};
       if (Array.isArray(e.fields)) ex.fields = e.fields.filter(k => k in FIELD);
       for (const k of ['target', 'rest', 'note']) if (e[k]) ex[k] = String(e[k]);
+      if (e.circuit) ex.circuit = true;
+      if (e.each) ex.each = true;
       if (e.warmup) ex.warmup = true;
       return ex;
     })

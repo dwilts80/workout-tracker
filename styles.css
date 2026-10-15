@@ -103,3 +103,9 @@ body.has-rest{padding-bottom:calc(150px + env(safe-area-inset-bottom))}
 .drive-btn{font-size:18px;padding:16px}
 .backup-nudge{border:1px dashed #60a5fa;background:#0f1f38}
 .backup-nudge .t{color:#93c5fd}
+.hold-cell{display:flex;flex-direction:column;gap:3px;align-items:stretch}
+.adj-row{display:flex;gap:3px}.adj{flex:1;padding:3px 0;font-size:12px;border-radius:8px;background:#0b1222;color:var(--muted)}
+.sets td.t{width:80px}
+.sets td.n{width:40px}
+.side{display:inline-block;margin-top:2px;padding:0 6px;border-radius:6px;font-size:12px;font-weight:800}
+.side-R{background:#1d4ed8;color:#dbeafe}.side-L{background:#c2410c;color:#ffedd5}
